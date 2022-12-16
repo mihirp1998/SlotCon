@@ -5,6 +5,10 @@ import random
 import shutil
 import time
 import datetime
+import wandb
+
+import ipdb
+st = ipdb.set_trace
 
 import numpy as np
 import torch
@@ -64,7 +68,9 @@ def get_parser():
     parser.add_argument('--save-freq', type=int, default=50, help='save frequency')
     parser.add_argument('--seed', type=int, help='Random seed.')
     parser.add_argument('--num-workers', type=int, default=8, help='num of workers per GPU to use')
-
+    parser.add_argument('--log-freq', type=int, default=2, help='number of training epochs')    
+    parser.add_argument('--d', action='store_true', default=False, help='do debug')    
+    parser.add_argument('--run-name', type=str, default='', help='run name')
     args = parser.parse_args()
     if os.environ["LOCAL_RANK"] is not None:
         args.local_rank = int(os.environ["LOCAL_RANK"])
@@ -151,7 +157,7 @@ def main(args):
     logger.info("=> creating model '{}'".format(args.arch))
     model, optimizer = build_model(args)
     logger.info(model)
-
+    # st()
     # define scheduler
     scheduler = get_scheduler(optimizer, len(train_loader), args)
     # define scaler
@@ -190,14 +196,17 @@ def train(train_loader, model, optimizer, scaler, scheduler, epoch, args):
     end = time.time()
     train_len = len(train_loader)
     for i, batch in enumerate(train_loader):
-        crops, coords, flags = batch
+        crops, coords, flags, masks = batch
+        # st()
         crops = [crop.cuda(non_blocking=True) for crop in crops]
         coords = [coord.cuda(non_blocking=True) for coord in coords]
         flags = [flag.cuda(non_blocking=True) for flag in flags]
+        masks = [mask.cuda(non_blocking=True) for mask in masks]
+        # st()
 
         # compute output and loss
         with torch.cuda.amp.autocast(scaler is not None):
-            loss = model((crops, coords, flags))
+            loss = model((crops, coords, flags, masks))
         
         optimizer.zero_grad()
         if args.fp16:
@@ -228,7 +237,15 @@ def train(train_loader, model, optimizer, scaler, scheduler, epoch, args):
 
 if __name__ == '__main__':
     args = get_parser()
-    
+
+
+    if args.local_rank == 0:
+        if not args.d:
+            if args.run_name is not '':
+                run_name = args.run_name 
+                wandb.init(project='slot_con', entity="mihirp",id= run_name)
+            else:
+                wandb.init(project='slot_con', entity="mihirp")
     torch.cuda.set_device(args.local_rank)
     torch.distributed.init_process_group(backend='nccl', init_method='env://')
     cudnn.benchmark = True

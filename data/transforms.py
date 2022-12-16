@@ -1,7 +1,8 @@
 import math
 import random
 import warnings
-
+import ipdb
+st = ipdb.set_trace
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
@@ -154,7 +155,7 @@ class CustomTwoCrop(object):
         
         return self.get_params(img, scale, ratio) # Fallback to default option
 
-    def __call__(self, img):
+    def __call__(self, img, mask):
         """
         Args:
             img (PIL Image): Image to be cropped and resized.
@@ -162,18 +163,30 @@ class CustomTwoCrop(object):
             crops (list of lists): result of multi-crop
         """
         crops, coords = [], []
+        mask_crops = []
+        size_mask = (7,7)
+        size_mask = (224,224)        
+        size_mask = (32,32)        
+        # st()
         params1 = self.get_params(img, self.scale, self.ratio)
         coords.append(_get_coord(*params1))
         crops.append(TF.resized_crop(img, *params1, self.size, self.interpolation))
+        # st()
+        mask_crops.append(TF.resized_crop(mask, *params1, size_mask, TF.InterpolationMode.NEAREST))
 
         if not self.condition_overlap:
             params2 = self.get_params(img, self.scale, self.ratio)
         else:
             params2 = self.get_params_conditioned(img, self.scale, self.ratio, params1)
+        
         coords.append(_get_coord(*params2))
-        crops.append(TF.resized_crop(img, *params2, self.size, self.interpolation))
 
-        return crops, _clip_coords(coords, [params1, params2])
+        
+        crops.append(TF.resized_crop(img, *params2, self.size, self.interpolation))
+        # st()
+        mask_crops.append(TF.resized_crop(mask, *params2, size_mask, TF.InterpolationMode.NEAREST))
+
+        return crops, _clip_coords(coords, [params1, params2]), mask_crops
 
 
 class CustomRandomHorizontalFlip(nn.Module):
@@ -181,24 +194,28 @@ class CustomRandomHorizontalFlip(nn.Module):
         super().__init__()
         self.p = p
 
-    def __call__(self, crops, coords):
+    def __call__(self, crops, coords, mask_crops):
         crops_flipped, coords_flipped, flags_flipped = [], [], []
-        for crop, coord in zip(crops, coords):
+        mask_crops_fipped = []
+        for crop, coord, mask_crop in zip(crops, coords, mask_crops):
             crop_flipped = crop
+            mask_crop_flipped = mask_crop
             coord_flipped = coord
             flag_flipped = False
             if torch.rand(1) < self.p:
                 crop_flipped = TF.hflip(crop)
+                mask_crop_flipped = TF.hflip(mask_crop)
                 coord_flipped = coord.clone()
                 coord_flipped[0] = 1. - coord[2]
                 coord_flipped[2] = 1. - coord[0]
                 flag_flipped = True
 
             crops_flipped.append(crop_flipped)
+            mask_crops_fipped.append(mask_crop_flipped)
             coords_flipped.append(coord_flipped)
             flags_flipped.append(flag_flipped)
 
-        return crops_flipped, coords_flipped, flags_flipped
+        return crops_flipped, coords_flipped, flags_flipped, mask_crops_fipped
 
 
 class CustomDataAugmentation(object):
@@ -232,10 +249,12 @@ class CustomDataAugmentation(object):
             normalize,
         ])
 
-    def __call__(self, image):
-        crops, coords = self.two_crop(image)
-        crops, coords, flags = self.hflip(crops, coords)
+    def __call__(self, image, mask):
+        crops, coords, mask_crops = self.two_crop(image, mask)
+        # st()
+        crops, coords, flags, mask_crops = self.hflip(crops, coords, mask_crops)
+
         crops_transformed = []
         crops_transformed.append(self.global_transfo1(crops[0]))
         crops_transformed.append(self.global_transfo2(crops[1]))
-        return crops_transformed, coords, flags
+        return crops_transformed, coords, flags, mask_crops

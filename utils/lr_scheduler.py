@@ -1,6 +1,7 @@
 # noinspection PyProtectedMember
 from torch.optim.lr_scheduler import _LRScheduler, CosineAnnealingLR
-
+import ipdb
+st = ipdb.set_trace
 
 # noinspection PyAttributeOutsideInit
 class GradualWarmupScheduler(_LRScheduler):
@@ -14,6 +15,7 @@ class GradualWarmupScheduler(_LRScheduler):
       """
 
     def __init__(self, optimizer, multiplier, warmup_epoch, after_scheduler, last_epoch=-1):
+        # st()
         self.multiplier = multiplier
         if self.multiplier <= 1.:
             raise ValueError('multiplier should be greater than 1.')
@@ -23,13 +25,14 @@ class GradualWarmupScheduler(_LRScheduler):
         super().__init__(optimizer, last_epoch=last_epoch)
 
     def get_lr(self):
+        # st()
         if self.last_epoch > self.warmup_epoch:
             return self.after_scheduler.get_lr()
         else:
-            return [base_lr / self.multiplier * ((self.multiplier - 1.) * self.last_epoch / self.warmup_epoch + 1.)
-                    for base_lr in self.base_lrs]
+            return [base_lr / self.multiplier * ((self.multiplier - 1.) * self.last_epoch / self.warmup_epoch + 1.) for base_lr in self.base_lrs]
 
     def step(self, epoch=None):
+        # st()
         if epoch is None:
             epoch = self.last_epoch + 1
         self.last_epoch = epoch
@@ -69,6 +72,7 @@ def get_scheduler(optimizer, n_iter_per_epoch, args):
         T_max=(args.epochs - args.warmup_epoch) * n_iter_per_epoch)
 
     if args.warmup_epoch > 0:
+        # st()
         scheduler = GradualWarmupScheduler(
             optimizer,
             multiplier=args.warmup_multiplier,
