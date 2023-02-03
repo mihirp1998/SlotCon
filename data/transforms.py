@@ -2,6 +2,7 @@ import math
 import random
 import warnings
 import ipdb
+import numpy as np
 st = ipdb.set_trace
 import torch
 import torch.nn as nn
@@ -68,7 +69,7 @@ class Solarize(nn.Module):
 
 class CustomTwoCrop(object):
     def __init__(self, size=224, scale=(0.2, 1.0), ratio=(3. / 4., 4. / 3.), interpolation=TF.InterpolationMode.BILINEAR,
-                condition_overlap=True):
+                condition_overlap=True, mask_size=7):
         if isinstance(size, (tuple, list)):
             self.size = size
         else:
@@ -78,6 +79,7 @@ class CustomTwoCrop(object):
             warnings.warn("range should be of kind (min, max)")
 
         self.interpolation = interpolation
+        self.mask_size = mask_size
 
         self.scale = scale
         self.ratio = ratio
@@ -164,9 +166,9 @@ class CustomTwoCrop(object):
         """
         crops, coords = [], []
         mask_crops = []
-        size_mask = (7,7)
-        size_mask = (224,224)        
-        size_mask = (32,32)        
+        # size_mask = (7,7)
+        # size_mask = (224,224)        
+        size_mask = (self.mask_size,self.mask_size)        
         # st()
         params1 = self.get_params(img, self.scale, self.ratio)
         coords.append(_get_coord(*params1))
@@ -219,7 +221,7 @@ class CustomRandomHorizontalFlip(nn.Module):
 
 
 class CustomDataAugmentation(object):
-    def __init__(self, size=224, min_scale=0.08):
+    def __init__(self, size=224, min_scale=0.08, mask_size=7,no_aug=False):
         color_jitter = transforms.Compose([
             transforms.RandomApply(
                 [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
@@ -232,29 +234,94 @@ class CustomDataAugmentation(object):
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
 
-        self.two_crop = CustomTwoCrop(size, (min_scale, 1), interpolation=TF.InterpolationMode.BICUBIC)
-        self.hflip = CustomRandomHorizontalFlip(p=0.5)
+        self.no_aug = no_aug
 
-        # first global crop
-        self.global_transfo1 = transforms.Compose([
-            color_jitter,
-            transforms.RandomApply([GaussianBlur([.1, 2.])], p=1.),
-            normalize,
+        self.two_crop = CustomTwoCrop(size, (min_scale, 1), interpolation=TF.InterpolationMode.BICUBIC, mask_size=mask_size)
+        if  self.no_aug:
+            self.hflip = CustomRandomHorizontalFlip(p=0.0)
+            self.global_transfo1 = transforms.Compose([
+                normalize,
+            ])            
+            self.global_transfo2 = transforms.Compose([
+                normalize,
+            ])                        
+        else:
+            self.hflip = CustomRandomHorizontalFlip(p=0.5)
+
+            # first global crop
+            self.global_transfo1 = transforms.Compose([
+                color_jitter,
+                transforms.RandomApply([GaussianBlur([.1, 2.])], p=1.),
+                normalize,
+            ])
+            # second global crop
+            self.global_transfo2 = transforms.Compose([
+                color_jitter,
+                transforms.RandomApply([GaussianBlur([.1, 2.])], p=0.1),
+                transforms.RandomApply([Solarize()], p=0.2),
+                normalize,
+            ])
+
+        self.test_two_crop = CustomTwoCrop(size, (1, 1), interpolation=TF.InterpolationMode.BICUBIC, mask_size=mask_size)
+        self.test_global_transfo = transforms.Compose([normalize])   
+
+        self.normalize_image = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize(size=(size,size)),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
-        # second global crop
-        self.global_transfo2 = transforms.Compose([
-            color_jitter,
-            transforms.RandomApply([GaussianBlur([.1, 2.])], p=0.1),
-            transforms.RandomApply([Solarize()], p=0.2),
+        self.normalize_mask = transforms.Compose([
+            # transforms.ToTensor(),
+            transforms.Resize(size=(mask_size,mask_size),interpolation=TF.InterpolationMode.NEAREST),
+        ])                
+
+    def __call__(self, image, mask):
+        # st()
+        # image_norm = self.normalize_image(image)
+        # mask_norm = self.normalize_mask(mask)
+        crops, coords, mask_crops = self.two_crop(image, mask)
+        # st()
+        
+        crops, coords, flags, mask_crops = self.hflip(crops, coords, mask_crops)
+
+        crops_transformed = []
+        # st()
+        # crops_transformed.append(self.global_transfo(crops[0]))
+        # crops_transformed.append(self.global_transfo(crops[1]))        
+        crops_transformed.append(self.global_transfo1(crops[0]))
+        crops_transformed.append(self.global_transfo2(crops[1]))
+
+
+        image_norm, _, mask_norm = self.test_two_crop(image, mask)
+        image_norm = self.test_global_transfo(image_norm[0])
+        mask_norm = mask_norm[0]
+        # print(image_norm[0].shape)
+        # print((np.array(image_norm[0]) == np.array(image_norm[1])).all())
+
+        # st()
+        return image_norm, mask_norm, crops_transformed, coords, flags, mask_crops
+
+
+
+
+class TestTransform(object):
+    def __init__(self,size,mask_size):
+        normalize = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize(size=(size,size)),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ])
+        self.normalize_mask = transforms.Compose([
+            # transforms.ToTensor(),
+            transforms.Resize(size=(mask_size,mask_size),interpolation=TF.InterpolationMode.NEAREST),
+        ])        
+
+        self.global_transfo = transforms.Compose([
             normalize,
         ])
 
     def __call__(self, image, mask):
-        crops, coords, mask_crops = self.two_crop(image, mask)
         # st()
-        crops, coords, flags, mask_crops = self.hflip(crops, coords, mask_crops)
-
-        crops_transformed = []
-        crops_transformed.append(self.global_transfo1(crops[0]))
-        crops_transformed.append(self.global_transfo2(crops[1]))
-        return crops_transformed, coords, flags, mask_crops
+        image = self.global_transfo(image)
+        mask = self.normalize_mask(mask)
+        return image, mask

@@ -25,10 +25,10 @@ class GradualWarmupScheduler(_LRScheduler):
         super().__init__(optimizer, last_epoch=last_epoch)
 
     def get_lr(self):
-        # st()
         if self.last_epoch > self.warmup_epoch:
             return self.after_scheduler.get_lr()
         else:
+            # print([base_lr / self.multiplier * ((self.multiplier - 1.) * self.last_epoch / self.warmup_epoch + 1.) for base_lr in self.base_lrs])
             return [base_lr / self.multiplier * ((self.multiplier - 1.) * self.last_epoch / self.warmup_epoch + 1.) for base_lr in self.base_lrs]
 
     def step(self, epoch=None):
@@ -65,6 +65,7 @@ class GradualWarmupScheduler(_LRScheduler):
         self.after_scheduler.load_state_dict(after_scheduler_state)
 
 
+
 def get_scheduler(optimizer, n_iter_per_epoch, args):
     scheduler = CosineAnnealingLR(
         optimizer=optimizer,
@@ -77,5 +78,5 @@ def get_scheduler(optimizer, n_iter_per_epoch, args):
             optimizer,
             multiplier=args.warmup_multiplier,
             after_scheduler=scheduler,
-            warmup_epoch=args.warmup_epoch * n_iter_per_epoch)
+            warmup_epoch=int(args.warmup_epoch * n_iter_per_epoch))
     return scheduler

@@ -27,7 +27,7 @@ class HungarianMatcher(nn.Module):
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
 
     @torch.no_grad()
-    def forward(self, outputs, targets, do_sigmoid = False, use_mm=False):
+    def forward(self, outputs, targets, do_softmax = False, use_mm=False):
         """ Performs the matching
         Params:
             outputs: This is a dict that contains at least these entries:
@@ -45,8 +45,10 @@ class HungarianMatcher(nn.Module):
                 len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
         """
         # st()
-        if do_sigmoid:
-            outputs = torch.sigmoid(outputs)
+        if do_softmax:
+            outputs = outputs.softmax(1)
+            # st()
+            # outputs = torch.sigmoid(outputs)
 
 
         bs, num_queries = outputs.shape[:2]

@@ -1,5 +1,6 @@
 import math
 import torch
+import ari
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
@@ -123,10 +124,11 @@ class UnNormalize(object):
         Returns:
             Tensor: Normalized image.
         """
-        for t, m, s in zip(tensor, self.mean, self.std):
+        tensor_new = tensor.clone()
+        for t, m, s in zip(tensor_new, self.mean, self.std):
             t.mul_(s).add_(m)
             # The normalize code -> t.sub_(m).div_(s)
-        return tensor
+        return tensor_new
 
 
 class SemanticGrouping(nn.Module):
@@ -162,8 +164,19 @@ class SlotCon(nn.Module):
         self.teacher_momentum = args.teacher_momentum
 
         self.num_channels = 512 if args.arch in ('resnet18', 'resnet34') else 2048
-        self.encoder_q = encoder(head_type='early_return')
-        self.encoder_k = encoder(head_type='early_return')
+
+        self.start_ari_mean_q = 0.0
+        self.end_ari_mean_q = 0.0        
+        self.start_ari_mean_k = 0.0
+        self.end_ari_mean_k = 0.0
+        
+        if args.sl_layer:
+            self.encoder_q = encoder(head_type='second_last')
+            self.encoder_k = encoder(head_type='second_last')
+        else:
+            self.encoder_q = encoder(head_type='early_return')
+            self.encoder_k = encoder(head_type='early_return')
+        # st()
 
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data.copy_(param_q.data)  # initialize
@@ -219,6 +232,35 @@ class SlotCon(nn.Module):
         for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
             param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)  
 
+
+
+    @torch.no_grad()
+    def _transfer_key_to_query(self):
+        """
+        Momentum update of the key encoder
+        """
+        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
+            param_q.data = param_k.data 
+        for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
+            param_q.data = param_k.data 
+        for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
+            param_q.data = param_k.data 
+
+
+
+
+    @torch.no_grad()
+    def _transfer_query_to_key(self):
+        """
+        Momentum update of the key encoder
+        """
+        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
+            param_k.data = param_q.data 
+        for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
+            param_k.data = param_q.data 
+        for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
+            param_k.data = param_q.data 
+
     def invaug(self, x, coords, flags):
         N, C, H, W = x.shape
 
@@ -239,9 +281,17 @@ class SlotCon(nn.Module):
         k = F.softmax((k - self.center) / self.teacher_temp, dim=-1)
         return torch.sum(-k * q, dim=-1).mean()
 
+    def set_means(self, start_ari_q, end_ari_q, start_ari_k, end_ari_k):
+        # st()
+        self.start_ari_mean_q = start_ari_q
+        self.end_ari_mean_q = end_ari_q
+        self.start_ari_mean_k = start_ari_k
+        self.end_ari_mean_k = end_ari_k
+
     def ctr_loss_filtered(self, q, k, score_q, score_k, tau=0.2):
         q = q.flatten(0, 1)
         k = F.normalize(k.flatten(0, 1), dim=1)
+        # st()
 
         mask_q = (torch.zeros_like(score_q).scatter_(1, score_q.argmax(1, keepdim=True), 1).sum(-1).sum(-1) > 0).long().detach()
         mask_k = (torch.zeros_like(score_k).scatter_(1, score_k.argmax(1, keepdim=True), 1).sum(-1).sum(-1) > 0).long().detach()
@@ -256,99 +306,170 @@ class SlotCon(nn.Module):
         labels = mask_k.cumsum(0)[idxs_q + N * torch.distributed.get_rank()] - 1
         return F.cross_entropy(logits, labels) * (2 * tau)
 
-    def forward(self, input):
-        crops, coords, flags, masks = input
-        # st()
-        vis_dict = {}
-        # st()
-        if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
-            crops_vis = self.unnormalize(crops)
-            crops_vis_img_1 = wandb.Image(crops_vis[0][:1], caption="input_image")
-            vis_dict['input_image_1'] = crops_vis_img_1
+    def forward(self, input, is_test=False):
+        if is_test:
+            vis_dict = {}
+            image,masks_1 = input
+            image_vis = self.unnormalize(image)
+            image_vis_img_1 = wandb.Image(image_vis[:1], caption="input_image")
+            vis_dict['test_input_image_1'] = image_vis_img_1
+            x1= self.projector_q(self.encoder_q(image))
+            y1 = self.projector_k(self.encoder_k(image))
+            (q1, score_q1)= self.grouping_q(x1)
+            (k1, score_k1)= self.grouping_k(y1)        
+            # st()    
+            mask_vis_q1 = summ_instance_masks(score_q1[0],image_vis[0],pred=True)
+            mask_vis_k1 = summ_instance_masks(score_k1[0],image_vis[0],pred=True)
+            mask_vis_q1_img = wandb.Image(mask_vis_q1, caption="pred_mask_new")
+            vis_dict['test_pred_mask_new_q1'] = mask_vis_q1_img
+            mask_vis_k1_img = wandb.Image(mask_vis_k1, caption="pred_mask_new")
+            vis_dict['test_pred_mask_new_k1'] = mask_vis_k1_img
 
-            crops_vis_img_2 = wandb.Image(crops_vis[1][:1], caption="input_image")
-            vis_dict['input_image_2'] = crops_vis_img_2
-        # st()
-
-
-
-        masks_1, masks_2 = masks[0], masks[1]
-
-        x1, x2 = self.projector_q(self.encoder_q(crops[0])), self.projector_q(self.encoder_q(crops[1]))
-        with torch.no_grad():  # no gradient to keys
-            self._momentum_update_key_encoder()  # update the key encoder
-            y1, y2 = self.projector_k(self.encoder_k(crops[0])), self.projector_k(self.encoder_k(crops[1]))
-
-
-        (q1, score_q1), (q2, score_q2) = self.grouping_q(x1), self.grouping_q(x2)
-
-
-        # st()
-        if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d): 
-            mask_vis_1 = summ_instance_masks(score_q1[0],crops_vis[0][0],pred=True)
-            mask_vis_2 = summ_instance_masks(score_q2[0],crops_vis[1][0],pred=True)
-            mask_vis_1_img = wandb.Image(mask_vis_1, caption="pred_mask_new")
-            vis_dict['pred_mask_new_1'] = mask_vis_1_img
-            mask_vis_2_img = wandb.Image(mask_vis_2, caption="pred_mask_new")
-            vis_dict['pred_mask_new_2'] = mask_vis_2_img
-
-
-            mask_vis_1 = summ_instance_masks(masks_1[0],crops_vis[0][0],pred=False)
-            mask_vis_2 = summ_instance_masks(masks_2[0],crops_vis[1][0],pred=False)
+            mask_vis_1 = summ_instance_masks(masks_1[0],image_vis[0],pred=False)
             mask_vis_1_img = wandb.Image(mask_vis_1, caption="gt_mask_new_1")
-            vis_dict['gt_mask_new_1'] = mask_vis_1_img
-            mask_vis_2_img = wandb.Image(mask_vis_2, caption="gt_mask_new_2")
-            vis_dict['gt_mask_new_2'] = mask_vis_2_img            
-        # find match
-        score_q1_ = score_q1.flatten(2,3)
-        score_q2_ = score_q2.flatten(2,3)
-
-        masks_1_ = masks_1.flatten(2,3)
-        masks_2_ = masks_2.flatten(2,3)
-
-        # new_indices = self.hungarian_matcher(masks_1_,score_q1_)
-        # masks_1_u_ = []
-        # score_q1_u_ = []
-        # for ind_ex, indices_ex in enumerate(new_indices):
-        #     p_indices,gt_indices = indices_ex
-        #     score_q1_u_.append(score_q1_[ind_ex,gt_indices])
-        #     masks_1_u_.append(masks_1_[ind_ex,p_indices])
-        # masks_1_u = torch.stack(masks_1_u_)
-        # score_q1_u = torch.stack(score_q1_u_)
-        # ce_loss_1 = self.cross_entropy(score_q1_u, masks_1_u)
+            vis_dict['test_gt_mask_new_1'] = mask_vis_1_img     
 
 
-        # new_indices = self.hungarian_matcher(masks_2_,score_q2_)
-        # masks_2_u_ = []
-        # score_q2_u_ = []
-        # for ind_ex, indices_ex in enumerate(new_indices):
-        #     p_indices,gt_indices = indices_ex
-        #     score_q2_u_.append(score_q2_[ind_ex,gt_indices])
-        #     masks_2_u_.append(masks_2_[ind_ex,p_indices])
-        # masks_2_u = torch.stack(masks_2_u_)
-        # score_q2_u = torch.stack(score_q2_u_)
-        # ce_loss_2 = self.cross_entropy(score_q2_u, masks_2_u)
-        # st()
+            score_q1_ = score_q1.flatten(2,3)
+            score_k1_ = score_k1.flatten(2,3)
+            masks_1_ = masks_1.flatten(2,3)
 
-        q1_aligned, q2_aligned = self.invaug(score_q1, coords[0], flags[0]), self.invaug(score_q2, coords[1], flags[1])
-        with torch.no_grad():
-            (k1, score_k1), (k2, score_k2) = self.grouping_k(y1), self.grouping_k(y2)
-            k1_aligned, k2_aligned = self.invaug(score_k1, coords[0], flags[0]), self.invaug(score_k2, coords[1], flags[1])
-        
-        loss = self.group_loss_weight * self.self_distill(q1_aligned.permute(0, 2, 3, 1).flatten(0, 2), k2_aligned.permute(0, 2, 3, 1).flatten(0, 2)) \
-             + self.group_loss_weight * self.self_distill(q2_aligned.permute(0, 2, 3, 1).flatten(0, 2), k1_aligned.permute(0, 2, 3, 1).flatten(0, 2))
+            ari_score_q1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_q1_.permute(0,2,1).cpu()).mean()
+            ari_score_k1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_k1_.permute(0,2,1).cpu()).mean()
 
-        self.update_center(torch.cat([score_k1, score_k2]).permute(0, 2, 3, 1).flatten(0, 2))
+            vis_dict['test_ari_score_q1'] = ari_score_q1     
+            vis_dict['test_ari_score_k1'] = ari_score_k1
+            # st()
 
-        loss += (1. - self.group_loss_weight) * self.ctr_loss_filtered(q1, k2, score_q1, score_k2) \
-              + (1. - self.group_loss_weight) * self.ctr_loss_filtered(q2, k1, score_q2, score_k1)
+            vis_dict['start_ari_mean_q'] = self.start_ari_mean_q
+            vis_dict['end_ari_mean_q'] = self.end_ari_mean_q            
+            vis_dict['start_ari_mean_k'] = self.start_ari_mean_k
+            vis_dict['end_ari_mean_k'] = self.end_ari_mean_k    
+            # print(ari_score_q1)
 
-        vis_dict['total_loss'] = loss
-        if not self.args.d:
-            wandb.log(vis_dict,step=self.global_steps)
-        self.global_steps += 1
+            # st()
+            self.global_steps += 1
 
-        return loss
+            vis_dict['test_total_loss'] = 0.0
+
+            # loss = ari_score_q1
+            return (ari_score_q1, ari_score_k1),vis_dict
+        else:
+            crops, coords, flags, masks = input
+            # st()
+            vis_dict = {}
+            # st()
+            if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
+                crops_vis_0 = self.unnormalize(crops[0])
+                crops_vis_img_1 = wandb.Image(crops_vis_0[:1], caption="input_image")
+                vis_dict['input_image_1'] = crops_vis_img_1
+
+                crops_vis_1 = self.unnormalize(crops[1])
+                crops_vis_img_2 = wandb.Image(crops_vis_1[:1], caption="input_image")
+                vis_dict['input_image_2'] = crops_vis_img_2
+            # st()
+            masks_1, masks_2 = masks[0], masks[1]
+
+            x1, x2 = self.projector_q(self.encoder_q(crops[0])), self.projector_q(self.encoder_q(crops[1]))
+            with torch.no_grad():  # no gradient to keys
+                if not self.args.do_tta:
+                    self._momentum_update_key_encoder()  # update the key encoder
+                y1, y2 = self.projector_k(self.encoder_k(crops[0])), self.projector_k(self.encoder_k(crops[1]))
+
+
+            (q1, score_q1), (q2, score_q2) = self.grouping_q(x1), self.grouping_q(x2)
+
+
+            # st()
+            if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d): 
+                # st()
+                mask_vis_1 = summ_instance_masks(score_q1[0],crops_vis_0[0],pred=True)
+                mask_vis_2 = summ_instance_masks(score_q2[0],crops_vis_1[0],pred=True)
+                mask_vis_1_img = wandb.Image(mask_vis_1, caption="pred_mask_new")
+                vis_dict['pred_mask_new_1'] = mask_vis_1_img
+                mask_vis_2_img = wandb.Image(mask_vis_2, caption="pred_mask_new")
+                vis_dict['pred_mask_new_2'] = mask_vis_2_img
+
+
+                mask_vis_1 = summ_instance_masks(masks_1[0],crops_vis_0[0],pred=False)
+                mask_vis_2 = summ_instance_masks(masks_2[0],crops_vis_1[0],pred=False)
+                mask_vis_1_img = wandb.Image(mask_vis_1, caption="gt_mask_new_1")
+                vis_dict['gt_mask_new_1'] = mask_vis_1_img
+                mask_vis_2_img = wandb.Image(mask_vis_2, caption="gt_mask_new_2")
+                vis_dict['gt_mask_new_2'] = mask_vis_2_img            
+            # find match
+            # st()
+            score_q1_ = score_q1.flatten(2,3)
+            score_q2_ = score_q2.flatten(2,3)
+
+            masks_1_ = masks_1.flatten(2,3)
+            masks_2_ = masks_2.flatten(2,3)
+            # st()
+            ari_score_1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_q1_.permute(0,2,1).cpu())
+            ari_score_2 = ari.adjusted_rand_index(masks_2_.permute(0,2,1).cpu(),score_q2_.permute(0,2,1).cpu())
+            # print(ari_score_1, ari_score_2)
+            ari_score = ((ari_score_1 + ari_score_2)/2.0).mean()
+
+            if self.args.seg_weight >0.0:
+                # score_q1_.permute(0,2,1).unique() masks_1_.permute(0,2,1).unique() masks_1_.permute(0,2,1).sum(-1).unique()
+                new_indices = self.hungarian_matcher(score_q1_,masks_1_, do_softmax=True)
+                masks_1_u_ = []
+                score_q1_u_ = []
+                for ind_ex, indices_ex in enumerate(new_indices):
+                    p_indices,gt_indices = indices_ex
+                    masks_1_u_.append(masks_1_[ind_ex,gt_indices])
+                    score_q1_u_.append(score_q1_[ind_ex,p_indices])
+                masks_1_u = torch.stack(masks_1_u_)
+                score_q1_u = torch.stack(score_q1_u_)
+                ce_loss_1 = self.cross_entropy(score_q1_u, masks_1_u)
+                # st()
+
+                new_indices = self.hungarian_matcher(score_q2_,masks_2_, do_softmax=True)
+                masks_2_u_ = []
+                score_q2_u_ = []
+                for ind_ex, indices_ex in enumerate(new_indices):
+                    p_indices,gt_indices = indices_ex
+                    masks_2_u_.append(masks_2_[ind_ex,gt_indices])
+                    score_q2_u_.append(score_q2_[ind_ex,p_indices])
+                masks_2_u = torch.stack(masks_2_u_)
+                score_q2_u = torch.stack(score_q2_u_)
+                # st()
+                ce_loss_2 = self.cross_entropy(score_q2_u, masks_2_u)
+
+                seg_supervised_loss = ce_loss_1 + ce_loss_2
+                # print(ce_loss_1,ce_loss_2,score_q2_u.mean())
+
+            else:
+                seg_supervised_loss = 0.0
+
+
+            # st()
+
+            q1_aligned, q2_aligned = self.invaug(score_q1, coords[0], flags[0]), self.invaug(score_q2, coords[1], flags[1])
+            with torch.no_grad():
+                (k1, score_k1), (k2, score_k2) = self.grouping_k(y1), self.grouping_k(y2)
+                k1_aligned, k2_aligned = self.invaug(score_k1, coords[0], flags[0]), self.invaug(score_k2, coords[1], flags[1])
+            
+            cont_loss = self.group_loss_weight * self.self_distill(q1_aligned.permute(0, 2, 3, 1).flatten(0, 2), k2_aligned.permute(0, 2, 3, 1).flatten(0, 2)) \
+                + self.group_loss_weight * self.self_distill(q2_aligned.permute(0, 2, 3, 1).flatten(0, 2), k1_aligned.permute(0, 2, 3, 1).flatten(0, 2))
+            
+            if not self.args.do_tta:
+                self.update_center(torch.cat([score_k1, score_k2]).permute(0, 2, 3, 1).flatten(0, 2))
+
+            cont_loss += (1. - self.group_loss_weight) * self.ctr_loss_filtered(q1, k2, score_q1, score_k2) \
+                + (1. - self.group_loss_weight) * self.ctr_loss_filtered(q2, k1, score_q2, score_k1)
+
+            loss = self.args.seg_weight * seg_supervised_loss + self.args.cont_weight * cont_loss
+            # print(loss,seg_supervised_loss,self.args.seg_weight)
+
+            vis_dict['cont_loss'] = self.args.cont_weight * cont_loss
+            vis_dict['seg_loss'] = self.args.seg_weight * seg_supervised_loss
+            vis_dict['total_loss'] = loss
+            vis_dict['ari_score'] = ari_score
+
+            self.global_steps += 1
+
+        return loss, vis_dict
     
     @torch.no_grad()
     def update_center(self, teacher_output):
