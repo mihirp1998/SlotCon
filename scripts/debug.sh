@@ -4,6 +4,7 @@ set -e
 set -x
 data_dir="/projects/katefgroup/datasets/msn_hard_pickled/train_set/"
 data_dir="/scratch/coco"
+data_dir="/projects/katefgroup/datasets/coco"
 output_dir="./output/coco_debug_quick"
 
 
@@ -32,10 +33,10 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --print-freq 10 \
     --save-freq 2 \
     --auto-resume \
-    --num-workers 8 \
+    --num-workers 0 \
     --seg-weight 1.0 \
     --cont-weight 0.0 \
-     --overfit --min-scale 1.0 --no-aug --d
+    --min-scale 1.0 --no-aug --d --do-seg-class --log-freq 1
     # --d
     # --overfit 
     # --resume output/slotcon_coco_r50_pretrained_s05c05_2/current.pth

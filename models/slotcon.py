@@ -155,6 +155,12 @@ class SlotCon(nn.Module):
         self.hungarian_matcher = HungarianMatcher()
         self.cross_entropy = nn.CrossEntropyLoss()
         self.args = args
+
+        self.ready_classifier = False
+
+        if args.arch == 'resnet50_pretrained_classification':
+            self.ready_classifier = True
+
         # st()
         self.unnormalize = UnNormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         self.global_steps = 0
@@ -165,11 +171,11 @@ class SlotCon(nn.Module):
 
         self.num_channels = 512 if args.arch in ('resnet18', 'resnet34') else 2048
 
-        self.start_ari_mean_q = 0.0
-        self.end_ari_mean_q = 0.0        
-        self.start_ari_mean_k = 0.0
-        self.end_ari_mean_k = 0.0
-        
+        self.start_acc_mean_q = 0.0
+        self.end_acc_mean_q = 0.0        
+        self.start_acc_mean_k = 0.0
+        self.end_acc_mean_k = 0.0
+        # st()
         if args.sl_layer:
             self.encoder_q = encoder(head_type='second_last')
             self.encoder_k = encoder(head_type='second_last')
@@ -177,6 +183,23 @@ class SlotCon(nn.Module):
             self.encoder_q = encoder(head_type='early_return')
             self.encoder_k = encoder(head_type='early_return')
         # st()
+
+        # st()
+        if args.do_only_classification:
+            if self.ready_classifier:
+                pass
+            else:
+                self.mha = nn.MultiheadAttention(1024, 1, batch_first=True)
+                self.key = nn.Linear(self.dim_out, 1024)
+                self.value = nn.Linear(self.dim_out, 1024)
+                self.query_embed = nn.Parameter(torch.randn(1, 1, 1024))
+                self.class_predict = nn.Sequential(nn.Linear(1024, 1024), nn.ReLU(), nn.Linear(1024, 1000))
+            self.class_loss = nn.CrossEntropyLoss()
+
+        if args.do_seg_class:
+            self.class_predict = nn.Sequential(nn.Linear(self.dim_out, 1024), nn.ReLU(), nn.Linear(1024, 134))
+            self.class_loss = nn.CrossEntropyLoss(ignore_index=-1)            
+
 
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data.copy_(param_q.data)  # initialize
@@ -281,12 +304,12 @@ class SlotCon(nn.Module):
         k = F.softmax((k - self.center) / self.teacher_temp, dim=-1)
         return torch.sum(-k * q, dim=-1).mean()
 
-    def set_means(self, start_ari_q, end_ari_q, start_ari_k, end_ari_k):
+    def set_means(self, start_acc_q, end_acc_q, start_acc_k, end_acc_k):
         # st()
-        self.start_ari_mean_q = start_ari_q
-        self.end_ari_mean_q = end_ari_q
-        self.start_ari_mean_k = start_ari_k
-        self.end_ari_mean_k = end_ari_k
+        self.start_acc_mean_q = start_acc_q
+        self.end_acc_mean_q = end_acc_q
+        self.start_acc_mean_k = start_acc_k
+        self.end_acc_mean_k = end_acc_k
 
     def ctr_loss_filtered(self, q, k, score_q, score_k, tau=0.2):
         q = q.flatten(0, 1)
@@ -306,15 +329,26 @@ class SlotCon(nn.Module):
         labels = mask_k.cumsum(0)[idxs_q + N * torch.distributed.get_rank()] - 1
         return F.cross_entropy(logits, labels) * (2 * tau)
 
+
+    def semantic_inference(self, mask_cls, mask_pred):
+        st()
+     
+
+
+
     def forward(self, input, is_test=False):
         if is_test:
             vis_dict = {}
-            image,masks_1 = input
+            image,masks_1,class_labels = input
             image_vis = self.unnormalize(image)
             image_vis_img_1 = wandb.Image(image_vis[:1], caption="input_image")
             vis_dict['test_input_image_1'] = image_vis_img_1
-            x1= self.projector_q(self.encoder_q(image))
-            y1 = self.projector_k(self.encoder_k(image))
+            if self.ready_classifier:
+                enc_q,enc_k = (self.encoder_q(image),self.encoder_k(image))
+                x1, y1 = self.projector_q(enc_q['layer4']), self.projector_k(enc_k['layer4'])
+            else:
+                x1= self.projector_q(self.encoder_q(image))
+                y1 = self.projector_k(self.encoder_k(image))
             (q1, score_q1)= self.grouping_q(x1)
             (k1, score_k1)= self.grouping_k(y1)        
             # st()    
@@ -324,27 +358,80 @@ class SlotCon(nn.Module):
             vis_dict['test_pred_mask_new_q1'] = mask_vis_q1_img
             mask_vis_k1_img = wandb.Image(mask_vis_k1, caption="pred_mask_new")
             vis_dict['test_pred_mask_new_k1'] = mask_vis_k1_img
-
-            mask_vis_1 = summ_instance_masks(masks_1[0],image_vis[0],pred=False)
-            mask_vis_1_img = wandb.Image(mask_vis_1, caption="gt_mask_new_1")
-            vis_dict['test_gt_mask_new_1'] = mask_vis_1_img     
-
-
+            
             score_q1_ = score_q1.flatten(2,3)
             score_k1_ = score_k1.flatten(2,3)
-            masks_1_ = masks_1.flatten(2,3)
+            # st()
+            if not self.args.do_only_classification:
+                mask_vis_1 = summ_instance_masks(masks_1[0],image_vis[0],pred=False)
+                mask_vis_1_img = wandb.Image(mask_vis_1, caption="gt_mask_new_1")
+                vis_dict['test_gt_mask_new_1'] = mask_vis_1_img     
+                masks_1_ = masks_1.flatten(2,3)
+                ari_score_q1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_q1_.permute(0,2,1).cpu()).mean()
+                ari_score_k1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_k1_.permute(0,2,1).cpu()).mean()
 
-            ari_score_q1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_q1_.permute(0,2,1).cpu()).mean()
-            ari_score_k1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_k1_.permute(0,2,1).cpu()).mean()
+                vis_dict['test_ari_score_q1'] = ari_score_q1     
+                vis_dict['test_ari_score_k1'] = ari_score_k1
 
-            vis_dict['test_ari_score_q1'] = ari_score_q1     
-            vis_dict['test_ari_score_k1'] = ari_score_k1
+
+            if self.args.do_tta:
+                vis_dict['start_acc_mean_q'] = self.start_acc_mean_q
+                vis_dict['end_acc_mean_q'] = self.end_acc_mean_q            
+                vis_dict['start_acc_mean_k'] = self.start_acc_mean_k
+                vis_dict['end_acc_mean_k'] = self.end_acc_mean_k  
             # st()
 
-            vis_dict['start_ari_mean_q'] = self.start_ari_mean_q
-            vis_dict['end_ari_mean_q'] = self.end_ari_mean_q            
-            vis_dict['start_ari_mean_k'] = self.start_ari_mean_k
-            vis_dict['end_ari_mean_k'] = self.end_ari_mean_k    
+            if self.args.do_seg_class:
+                # st()
+                q1_pred_class = self.class_predict(q1)
+                k1_pred_class = self.class_predict(k1)
+                # q1_gt_labels = class_labels
+                # k1_gt_labels = class_labels
+                class_labels_valid = (class_labels != -1).float()
+                
+                q1_pred_idx = torch.argmax(q1_pred_class.squeeze(1),dim=-1)
+                q1_correct = (q1_pred_idx==class_labels).float()
+                q1_num_correct = torch.sum(class_labels_valid*q1_correct).float()
+                q1_total_num = torch.sum(class_labels_valid).float()
+                q1_acc = q1_num_correct/q1_total_num
+                vis_dict['q1_classification_acc'] = q1_acc
+
+                k1_pred_idx = torch.argmax(k1_pred_class.squeeze(1),dim=-1)
+                k1_correct = (k1_pred_idx==class_labels).float()
+                k1_num_correct = torch.sum(class_labels_valid*k1_correct).float()
+                k1_total_num = torch.sum(class_labels_valid).float()
+                k1_acc = k1_num_correct/k1_total_num
+                vis_dict['k1_classification_acc'] = k1_acc
+
+                # st()
+            if self.args.do_only_classification:
+                B,_,_ = q1.shape
+                # qs = torch.cat([q1,q2],0)
+                class_labels_merged = class_labels
+                total_num = torch.tensor(class_labels_merged.shape[0]).float()
+                # st()
+                if self.ready_classifier:
+                    pred_class_q1,pred_class_k1 = (enc_q['fc'],enc_k['fc'])
+                else:
+                    query_embed = self.query_embed.repeat(B,1,1)
+                    cls_token_q1,_ = self.mha(query_embed,self.key(q1),self.value(q1))
+                    pred_class_q1 = self.class_predict(cls_token_q1)
+                    cls_token_k1,_ = self.mha(query_embed,self.key(k1),self.value(k1))
+                    pred_class_k1 = self.class_predict(cls_token_k1)
+
+
+                pred_idx_q1 = torch.argmax(pred_class_q1.squeeze(1),dim=-1)
+                num_correct_q1 = torch.sum(pred_idx_q1==class_labels_merged).float()
+                acc_q1 = num_correct_q1/total_num
+                vis_dict['q1_classification_acc'] = acc_q1
+
+                pred_idx_k1 = torch.argmax(pred_class_k1.squeeze(1),dim=-1)
+                num_correct_k1 = torch.sum(pred_idx_k1==class_labels_merged).float()
+                acc_k1 = num_correct_k1/total_num
+                vis_dict['k1_classification_acc'] = acc_k1
+                # print(acc_q1,acc_k1)
+                # st()
+              
             # print(ari_score_q1)
 
             # st()
@@ -353,12 +440,12 @@ class SlotCon(nn.Module):
             vis_dict['test_total_loss'] = 0.0
 
             # loss = ari_score_q1
-            return (ari_score_q1, ari_score_k1),vis_dict
+            return vis_dict
         else:
-            crops, coords, flags, masks = input
-            # st()
+            crops, coords, flags, masks, class_labels,class_str = input
+
             vis_dict = {}
-            # st()
+
             if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
                 crops_vis_0 = self.unnormalize(crops[0])
                 crops_vis_img_1 = wandb.Image(crops_vis_0[:1], caption="input_image")
@@ -367,84 +454,37 @@ class SlotCon(nn.Module):
                 crops_vis_1 = self.unnormalize(crops[1])
                 crops_vis_img_2 = wandb.Image(crops_vis_1[:1], caption="input_image")
                 vis_dict['input_image_2'] = crops_vis_img_2
-            # st()
-            masks_1, masks_2 = masks[0], masks[1]
 
-            x1, x2 = self.projector_q(self.encoder_q(crops[0])), self.projector_q(self.encoder_q(crops[1]))
+                vis_dict['class_name'] = wandb.Html(class_str[0])
+
+            # st()
+            if self.ready_classifier:
+                enc_q_0,enc_q_1 = (self.encoder_q(crops[0]),self.encoder_q(crops[1]))
+                x1, x2 = self.projector_q(enc_q_0['layer4']), self.projector_q(enc_q_1['layer4'])
+            else:
+                x1, x2 = self.projector_q(self.encoder_q(crops[0])), self.projector_q(self.encoder_q(crops[1]))
+            
             with torch.no_grad():  # no gradient to keys
                 if not self.args.do_tta:
                     self._momentum_update_key_encoder()  # update the key encoder
-                y1, y2 = self.projector_k(self.encoder_k(crops[0])), self.projector_k(self.encoder_k(crops[1]))
+                
+                if self.ready_classifier:
+                    enc_k_0,enc_k_1 = (self.encoder_k(crops[0]),self.encoder_k(crops[1]))
+                    y1, y2 = self.projector_k(enc_k_0['layer4']), self.projector_k(enc_k_1['layer4'])                    
+                else:
+                    y1, y2 = self.projector_k(self.encoder_k(crops[0])), self.projector_k(self.encoder_k(crops[1]))
 
 
             (q1, score_q1), (q2, score_q2) = self.grouping_q(x1), self.grouping_q(x2)
 
 
-            # st()
-            if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d): 
-                # st()
-                mask_vis_1 = summ_instance_masks(score_q1[0],crops_vis_0[0],pred=True)
-                mask_vis_2 = summ_instance_masks(score_q2[0],crops_vis_1[0],pred=True)
-                mask_vis_1_img = wandb.Image(mask_vis_1, caption="pred_mask_new")
-                vis_dict['pred_mask_new_1'] = mask_vis_1_img
-                mask_vis_2_img = wandb.Image(mask_vis_2, caption="pred_mask_new")
-                vis_dict['pred_mask_new_2'] = mask_vis_2_img
-
-
-                mask_vis_1 = summ_instance_masks(masks_1[0],crops_vis_0[0],pred=False)
-                mask_vis_2 = summ_instance_masks(masks_2[0],crops_vis_1[0],pred=False)
-                mask_vis_1_img = wandb.Image(mask_vis_1, caption="gt_mask_new_1")
-                vis_dict['gt_mask_new_1'] = mask_vis_1_img
-                mask_vis_2_img = wandb.Image(mask_vis_2, caption="gt_mask_new_2")
-                vis_dict['gt_mask_new_2'] = mask_vis_2_img            
-            # find match
-            # st()
             score_q1_ = score_q1.flatten(2,3)
             score_q2_ = score_q2.flatten(2,3)
 
-            masks_1_ = masks_1.flatten(2,3)
-            masks_2_ = masks_2.flatten(2,3)
-            # st()
-            ari_score_1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_q1_.permute(0,2,1).cpu())
-            ari_score_2 = ari.adjusted_rand_index(masks_2_.permute(0,2,1).cpu(),score_q2_.permute(0,2,1).cpu())
-            # print(ari_score_1, ari_score_2)
-            ari_score = ((ari_score_1 + ari_score_2)/2.0).mean()
-
-            if self.args.seg_weight >0.0:
-                # score_q1_.permute(0,2,1).unique() masks_1_.permute(0,2,1).unique() masks_1_.permute(0,2,1).sum(-1).unique()
-                new_indices = self.hungarian_matcher(score_q1_,masks_1_, do_softmax=True)
-                masks_1_u_ = []
-                score_q1_u_ = []
-                for ind_ex, indices_ex in enumerate(new_indices):
-                    p_indices,gt_indices = indices_ex
-                    masks_1_u_.append(masks_1_[ind_ex,gt_indices])
-                    score_q1_u_.append(score_q1_[ind_ex,p_indices])
-                masks_1_u = torch.stack(masks_1_u_)
-                score_q1_u = torch.stack(score_q1_u_)
-                ce_loss_1 = self.cross_entropy(score_q1_u, masks_1_u)
-                # st()
-
-                new_indices = self.hungarian_matcher(score_q2_,masks_2_, do_softmax=True)
-                masks_2_u_ = []
-                score_q2_u_ = []
-                for ind_ex, indices_ex in enumerate(new_indices):
-                    p_indices,gt_indices = indices_ex
-                    masks_2_u_.append(masks_2_[ind_ex,gt_indices])
-                    score_q2_u_.append(score_q2_[ind_ex,p_indices])
-                masks_2_u = torch.stack(masks_2_u_)
-                score_q2_u = torch.stack(score_q2_u_)
-                # st()
-                ce_loss_2 = self.cross_entropy(score_q2_u, masks_2_u)
-
-                seg_supervised_loss = ce_loss_1 + ce_loss_2
-                # print(ce_loss_1,ce_loss_2,score_q2_u.mean())
-
-            else:
-                seg_supervised_loss = 0.0
+            # self.mha(self.)
 
 
-            # st()
-
+            # SSL loss
             q1_aligned, q2_aligned = self.invaug(score_q1, coords[0], flags[0]), self.invaug(score_q2, coords[1], flags[1])
             with torch.no_grad():
                 (k1, score_k1), (k2, score_k2) = self.grouping_k(y1), self.grouping_k(y2)
@@ -459,9 +499,157 @@ class SlotCon(nn.Module):
             cont_loss += (1. - self.group_loss_weight) * self.ctr_loss_filtered(q1, k2, score_q1, score_k2) \
                 + (1. - self.group_loss_weight) * self.ctr_loss_filtered(q2, k1, score_q2, score_k1)
 
-            loss = self.args.seg_weight * seg_supervised_loss + self.args.cont_weight * cont_loss
-            # print(loss,seg_supervised_loss,self.args.seg_weight)
 
+            if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
+                mask_vis_1 = summ_instance_masks(score_q1[0],crops_vis_0[0],pred=True)
+                mask_vis_2 = summ_instance_masks(score_q2[0],crops_vis_1[0],pred=True)
+                mask_vis_1_img = wandb.Image(mask_vis_1, caption="pred_mask_new")
+                vis_dict['pred_mask_new_1'] = mask_vis_1_img
+                mask_vis_2_img = wandb.Image(mask_vis_2, caption="pred_mask_new")
+                vis_dict['pred_mask_new_2'] = mask_vis_2_img
+
+
+            if self.args.do_seg_class:
+                # qs = torch.cat([q1,q2],0)
+                q1_pred_class = self.class_predict(q1)
+                q2_pred_class = self.class_predict(q2)
+                q1_gt_labels = class_labels
+                q2_gt_labels = class_labels
+
+            # segmentation loss
+            if not self.args.do_only_classification:
+                masks_1, masks_2 = masks[0], masks[1]
+
+                if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
+                    mask_vis_1 = summ_instance_masks(masks_1[0],crops_vis_0[0],pred=False)
+                    mask_vis_2 = summ_instance_masks(masks_2[0],crops_vis_1[0],pred=False)
+                    mask_vis_1_img = wandb.Image(mask_vis_1, caption="gt_mask_new_1")
+                    vis_dict['gt_mask_new_1'] = mask_vis_1_img
+                    mask_vis_2_img = wandb.Image(mask_vis_2, caption="gt_mask_new_2")
+                    vis_dict['gt_mask_new_2'] = mask_vis_2_img            
+
+                
+                masks_1_ = masks_1.flatten(2,3)
+                masks_2_ = masks_2.flatten(2,3)
+                # st()
+                ari_score_1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_q1_.permute(0,2,1).cpu())
+                ari_score_2 = ari.adjusted_rand_index(masks_2_.permute(0,2,1).cpu(),score_q2_.permute(0,2,1).cpu())
+                # print(ari_score_1, ari_score_2)
+                ari_score = ((ari_score_1 + ari_score_2)/2.0).mean()
+
+                if self.args.seg_weight >0.0:
+                    # score_q1_.permute(0,2,1).unique() masks_1_.permute(0,2,1).unique() masks_1_.permute(0,2,1).sum(-1).unique()
+                    new_indices = self.hungarian_matcher(score_q1_,masks_1_, do_softmax=True)
+                    masks_1_u_ = []
+                    score_q1_u_ = []
+                    
+                    class_1_u_ = []
+                    pred_class_1_u_ = []
+
+                    for ind_ex, indices_ex in enumerate(new_indices):
+                        p_indices,gt_indices = indices_ex
+                        masks_1_u_.append(masks_1_[ind_ex,gt_indices])
+                        score_q1_u_.append(score_q1_[ind_ex,p_indices])
+
+                        if self.args.do_seg_class:
+                            class_1_u_.append(q1_gt_labels[ind_ex,gt_indices])
+                            pred_class_1_u_.append(q1_pred_class[ind_ex,p_indices])
+
+
+
+                    masks_1_u = torch.stack(masks_1_u_)
+                    score_q1_u = torch.stack(score_q1_u_)
+
+                    class_1_u = torch.stack(class_1_u_)
+                    pred_class_1_u = torch.stack(pred_class_1_u_)
+
+                    ce_loss_1 = self.cross_entropy(score_q1_u, masks_1_u)
+                    # st()
+
+                    new_indices = self.hungarian_matcher(score_q2_,masks_2_, do_softmax=True)
+                    masks_2_u_ = []
+                    score_q2_u_ = []
+
+                    class_2_u_ = []
+                    pred_class_2_u_ = []
+
+                    for ind_ex, indices_ex in enumerate(new_indices):
+                        p_indices,gt_indices = indices_ex
+                        masks_2_u_.append(masks_2_[ind_ex,gt_indices])
+                        score_q2_u_.append(score_q2_[ind_ex,p_indices])
+
+                        if self.args.do_seg_class:
+                            class_2_u_.append(q2_gt_labels[ind_ex,gt_indices])
+                            pred_class_2_u_.append(q2_pred_class[ind_ex,p_indices])
+
+
+                    masks_2_u = torch.stack(masks_2_u_)
+                    score_q2_u = torch.stack(score_q2_u_)
+
+                    if self.args.do_seg_class:
+                        class_2_u = torch.stack(class_2_u_)
+                        pred_class_2_u = torch.stack(pred_class_2_u_)
+
+                    # st()
+                    ce_loss_2 = self.cross_entropy(score_q2_u, masks_2_u)
+
+                    seg_supervised_loss = ce_loss_1 + ce_loss_2
+                    # print(ce_loss_1,ce_loss_2,score_q2_u.mean())
+
+                else:
+                    seg_supervised_loss = 0.0
+            else:
+                seg_supervised_loss = 0.0
+                ari_score = 0.0
+
+            if self.args.do_seg_class:
+                pred_classes = torch.cat([pred_class_1_u,pred_class_2_u],0)
+                pred_classes = pred_classes.reshape(-1,pred_classes.shape[-1])
+
+                class_labels_merged = torch.cat([class_1_u,class_2_u],0).reshape(-1)  
+                # st()
+                class_loss = self.class_loss(pred_classes.squeeze(1),class_labels_merged.long())
+
+                pred_idx = torch.argmax(pred_classes.squeeze(1),dim=-1)
+                class_labels_valid = (class_labels_merged != -1).float()
+                correct = (pred_idx==class_labels_merged).float()
+
+                num_correct = torch.sum(class_labels_valid*correct).float()
+                total_num = torch.sum(class_labels_valid).float()
+                acc = num_correct/total_num
+                vis_dict['classification_acc'] = acc
+                # st()
+                # vis_dict['predicted_segments'] = acc
+
+                # st()
+
+
+
+            # classification only loss
+            if self.args.do_only_classification:
+                class_labels_merged = torch.cat([class_labels,class_labels],0)
+                if self.ready_classifier:
+                    pred_class = torch.cat([enc_q_0['fc'],enc_q_1['fc']], 0)
+                    # st()
+                else:
+                    B,_,_ = q1.shape
+                    qs = torch.cat([q1,q2],0)
+                    query_embed = self.query_embed.repeat(B*2,1,1)
+                    cls_token,_ = self.mha(query_embed,self.key(qs),self.value(qs))
+                    pred_class = self.class_predict(cls_token)
+                class_loss = self.class_loss(pred_class.squeeze(1),class_labels_merged)
+                pred_idx = torch.argmax(pred_class.squeeze(1),dim=-1)
+                num_correct = torch.sum(pred_idx==class_labels_merged).float()
+                total_num = torch.tensor(class_labels_merged.shape[0]).float()
+                acc = num_correct/total_num
+                vis_dict['classification_acc'] = acc
+                # st()
+
+            # st()
+            loss = (self.args.seg_weight * seg_supervised_loss) + (self.args.cont_weight * cont_loss) + (self.args.class_weight * class_loss )
+
+            
+            vis_dict['classification_loss'] = self.args.class_weight * class_loss
             vis_dict['cont_loss'] = self.args.cont_weight * cont_loss
             vis_dict['seg_loss'] = self.args.seg_weight * seg_supervised_loss
             vis_dict['total_loss'] = loss

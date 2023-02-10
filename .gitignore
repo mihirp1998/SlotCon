@@ -1,0 +1,6 @@
+*.pyc
+output/
+wandb/
+*.p
+*.pth
+*.png

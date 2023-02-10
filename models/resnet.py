@@ -6,6 +6,8 @@ st = ipdb.set_trace
 import torch.nn as nn
 import torchvision.models as models
 import torch
+from torchvision.models.feature_extraction import create_feature_extractor
+
 import numpy as np
 from mask2former.modeling.pixel_decoder.fpn import build_pixel_decoder
 from detectron2.modeling import build_backbone
@@ -23,7 +25,7 @@ import logging
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152',
            'resnet18_d', 'resnet34_d', 'resnet50_d', 'resnet101_d', 'resnet152_d',
-           'resnet50_16s', 'resnet50_w2x', 'resnext101_32x8d', 'resnext152_32x8d','resnet50_l','resnet50_l2','resnet50_pretrained','resnet50_maskformer']
+           'resnet50_16s', 'resnet50_w2x', 'resnext101_32x8d', 'resnext152_32x8d','resnet50_l','resnet50_l2','resnet50_pretrained','resnet50_maskformer','resnet50_pretrained_classification']
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -114,6 +116,30 @@ class Bottleneck(nn.Module):
 
 
         return out
+
+
+
+
+class ResNetPretrainedClass(nn.Module):
+
+    def __init__(self):
+        super(ResNetPretrainedClass, self).__init__()
+        resnet = models.resnet50(pretrained=True)
+        return_nodes = {"layer4.2.relu_2": "layer4",'fc': 'fc'}
+        self.model2 = create_feature_extractor(resnet, return_nodes=return_nodes)
+
+        # modules_encoder = list(self.resnet.children())[:-2]
+        # self.resnet_encoder = nn.Sequential(*modules_encoder)
+
+        # modules_decoder = list(self.resnet.children())[-2:]        
+        # self.resnet_decoder = nn.Sequential(*modules_decoder)
+        # st()
+    def forward(self, x):
+        # st()
+        x_encoder = self.model2(x)
+        # class_logits = self.resnet_decoder(x_encoder)
+        # st()
+        return x_encoder
 
 
 
@@ -438,6 +464,10 @@ def resnet50(**kwargs):
 
 def resnet50_pretrained(**kwargs):
     return ResNetPretrained(Bottleneck, [3, 4, 6, 3], **kwargs, width=8)
+
+def resnet50_pretrained_classification(**kwargs):
+    return ResNetPretrainedClass()
+
 
 
 def resnet50_maskformer(**kwargs):

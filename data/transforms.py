@@ -174,7 +174,10 @@ class CustomTwoCrop(object):
         coords.append(_get_coord(*params1))
         crops.append(TF.resized_crop(img, *params1, self.size, self.interpolation))
         # st()
-        mask_crops.append(TF.resized_crop(mask, *params1, size_mask, TF.InterpolationMode.NEAREST))
+        if mask is None:
+            mask_crops.append(None)
+        else:
+            mask_crops.append(TF.resized_crop(mask, *params1, size_mask, TF.InterpolationMode.NEAREST))
 
         if not self.condition_overlap:
             params2 = self.get_params(img, self.scale, self.ratio)
@@ -186,7 +189,10 @@ class CustomTwoCrop(object):
         
         crops.append(TF.resized_crop(img, *params2, self.size, self.interpolation))
         # st()
-        mask_crops.append(TF.resized_crop(mask, *params2, size_mask, TF.InterpolationMode.NEAREST))
+        if mask is None:
+            mask_crops.append(None)
+        else:        
+            mask_crops.append(TF.resized_crop(mask, *params2, size_mask, TF.InterpolationMode.NEAREST))
 
         return crops, _clip_coords(coords, [params1, params2]), mask_crops
 
@@ -206,7 +212,10 @@ class CustomRandomHorizontalFlip(nn.Module):
             flag_flipped = False
             if torch.rand(1) < self.p:
                 crop_flipped = TF.hflip(crop)
-                mask_crop_flipped = TF.hflip(mask_crop)
+                if mask_crop is None:
+                    mask_crop_flipped = None
+                else:
+                    mask_crop_flipped = TF.hflip(mask_crop)
                 coord_flipped = coord.clone()
                 coord_flipped[0] = 1. - coord[2]
                 coord_flipped[2] = 1. - coord[0]

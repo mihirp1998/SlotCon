@@ -1,0 +1,5 @@
+semantic_val2017 is generated using panoptic2segmantic_seggmentation.py  - probably never need to use this
+mod_semantic_val2017 is generated using create_semantic_json.py and semantic_val2017/, however making sure that rgb2id works once u load it - should be used for evaluation
+mod_semantic_val2017.json is json version of the above - generated using panoptic2segmantic_seggmentation.py - should be used for evaluation
+_100_ is only examples for each
+100_val2017 is the rgb version
