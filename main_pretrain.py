@@ -219,6 +219,10 @@ def save_checkpoint(args, epoch, model, optimizer, scheduler, scaler=None):
         }        
     if args.fp16:
         state['scaler'] = scaler.state_dict()
+
+    file_name = os.path.join(args.output_dir, f'ckpt_epoch_{epoch}.pth')
+    torch.save(state, file_name)
+
     files = os.listdir(args.output_dir)    
     for f in files:
         if  (f'ckpt_epoch_{epoch}.pth' not in f) and (".pth" in f):
