@@ -227,9 +227,9 @@ class ImageNet(Dataset):
         if self.overfit:
             idx = 12
             idx = 4
-            idx = 5            
+            idx = 5
             idx = 6
-              
+        
         fpath = self.fnames[idx]
         foldername = fpath.split("/")[-2] 
         class_label = torch.tensor(int(self.folder_index_mapping[foldername][0]) - 1 )
@@ -239,9 +239,7 @@ class ImageNet(Dataset):
         H,W = np.array(image).shape[:2]
     
         # if self.corrupt_name != '':
-        #     st()
         #     image = corrupt(np.array(image), corruption_name=self.corrupt_name, severity=int(self.corrupt_level))
-        #     st()
 
         mask_val = torch.zeros(1,H,W)
         return_val = self.transform(image, mask_val) 
@@ -249,9 +247,9 @@ class ImageNet(Dataset):
         return_val.append(class_label)
         return_val.append(class_str)
         return_val.append(fpath.split('/')[-1])
-        # st()
+
         return_val = tuple(return_val)
 
-        # st()
+
         self.total_idx += 1
         return  return_val

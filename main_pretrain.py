@@ -73,6 +73,9 @@ def get_parser():
     parser.add_argument('--do-only-classification', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
     parser.add_argument('--do-seg-class', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
     parser.add_argument('--no-scheduler', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
+    parser.add_argument('--max-pool-classifier', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
+    parser.add_argument('--no-strict', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
+    parser.add_argument('--fine-tune', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')            
     
     
     # misc
@@ -105,6 +108,21 @@ def get_parser():
 def build_model(args):
     encoder = resnet.__dict__[args.arch]
     model = SlotCon(encoder, args).cuda()
+
+
+
+    if args.fine_tune:
+        # st()
+        for name, param in model.named_parameters():
+            # print(name)
+            if "classifier" in name:
+                param.requires_grad = True
+                # trainable_params.append(param)
+            else:
+                param.requires_grad = False
+
+    # st()
+
     num_params = count_parameters(model)
     print(f"num_params {num_params}")
     # st()
@@ -201,8 +219,6 @@ def save_checkpoint(args, epoch, model, optimizer, scheduler, scaler=None):
         }        
     if args.fp16:
         state['scaler'] = scaler.state_dict()
-    file_name = os.path.join(args.output_dir, f'ckpt_epoch_{epoch}.pth')
-    torch.save(state, file_name)
     files = os.listdir(args.output_dir)    
     for f in files:
         if  (f'ckpt_epoch_{epoch}.pth' not in f) and (".pth" in f):
@@ -218,12 +234,15 @@ def load_checkpoint(args, model, optimizer, scheduler, scaler=None):
 
         model.module.re_init(args)
 
-        if args.do_tta:
+        if args.do_tta or args.fine_tune:
             for key_val in  checkpoint['model'].keys():
                 if "_q" in key_val:
                     checkpoint['model'][key_val] = checkpoint['model'][key_val.replace('_q','_k')]
-
-        model.load_state_dict(checkpoint['model'])
+        # st()
+        if args.no_strict:
+            model.load_state_dict(checkpoint['model'], strict=False)
+        else:
+            model.load_state_dict(checkpoint['model'])
         # st()
         if not args.no_load_optim:
             if 'optimizer' in checkpoint:
@@ -232,10 +251,12 @@ def load_checkpoint(args, model, optimizer, scheduler, scaler=None):
                 scheduler.load_state_dict(checkpoint['scheduler'])
             if 'epoch' in checkpoint:
                 args.start_epoch = checkpoint['epoch'] + 1
+
         if args.fp16 and 'scaler' in checkpoint:
             scaler.load_state_dict(checkpoint['scaler'])
         # st()
         logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, args.start_epoch))
+        # st()
 
         if args.override_lr:
             optimizer.param_groups[0]['lr'] = args.base_lr
@@ -318,6 +339,7 @@ def main(args):
 
     if args.resume:
         load_checkpoint(args, model, optimizer, scheduler, scaler)
+        model.module.global_steps = args.start_epoch * len(train_loader)
 
     for epoch in range(args.start_epoch, args.epochs + 1):
         train_sampler.set_epoch(epoch)
@@ -331,6 +353,9 @@ def test(test_loader, model, args,scaler):
     model.eval()
     print('Testing')
     # st()
+    num_val = 1
+    k1_acc = []
+    q1_acc = []    
     with torch.no_grad():
         with torch.cuda.amp.autocast(scaler is not None):
             for i, batch in enumerate(test_loader):
@@ -339,10 +364,18 @@ def test(test_loader, model, args,scaler):
                 mask_norm = mask_norm.cuda(non_blocking=True)                
                 vis_dict = model((image_norm, mask_norm, class_labels), is_test=True)
                 # st()
-                if i ==1:
-                    break
+                k1_acc.append(vis_dict['k1_classification_acc'])
+                q1_acc.append(vis_dict['q1_classification_acc'])
+
+                # if i ==num_val:
+                #     vis_dict['k1_acc_avg'] = torch.mean(torch.tensor(k1_acc))
+                #     vis_dict['q1_acc_avg'] = torch.mean(torch.tensor(q1_acc))
+                
                 if not args.d and dist.get_rank() == 0:
                     wandb.log(vis_dict,step=model.module.global_steps)
+                
+                if i ==num_val:
+                    break
 
 
 
@@ -403,6 +436,15 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                         wandb.log(vis_dict,step=model.module.global_steps)
 
         model.train()
+        # st()
+        if args.fine_tune:
+            model.module.encoder_q.eval()
+            model.module.encoder_k.eval()
+            model.module.grouping_q.eval()
+            model.module.grouping_k.eval()
+            model.module.projector_q.eval()
+            model.module.projector_k.eval()            
+
 
         # compute output and loss
         with torch.cuda.amp.autocast(scaler is not None):
