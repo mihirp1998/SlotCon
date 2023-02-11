@@ -172,16 +172,17 @@ class ImageNet(Dataset):
         #     self.corrupt_name = ''
         # else:
         #     self.corrupt_name, self.corrupt_level = corrupt_name.split('-') 
-        # st()
+        
         if dataset == 'imagenetval':
-            self.fnames = pickle.load(open(data_dir + '/val_list.p','rb'))
+            self.fnames = pickle.load(open('imagenet' + '/val_list.p','rb'))
         elif dataset == 'imagenetval_corrupt_gauss':
-            self.fnames = pickle.load(open(data_dir + '/val_gaussian_noise_5.p','rb'))
+            self.fnames = pickle.load(open('imagenet' + '/val_gaussian_noise_5.p','rb'))
         else:
-            self.fnames = pickle.load(open(data_dir + '/train_list.p','rb'))
+            self.fnames = pickle.load(open('imagenet' + '/train_list.p','rb'))
         # with open(f'{data_dir}/train/index_synset.yaml', 'r') as file:
         #     indexfolder_mapping = yaml.safe_load(file)pickle.dump(self.fnames,open(data_dir + '/val_list.p','wb'))
         # self.folder_index_mapping = {v: k for k, v in indexfolder_mapping.items()}
+        self.data_dir = args.data_dir
         # st()
         if args.arch == 'resnet50_pretrained_classification':
             self.folder_index_mapping = {}
@@ -223,6 +224,7 @@ class ImageNet(Dataset):
             num_iter = self.total_idx//self.batch_size 
             idx = num_iter//self.tta_steps
         # print(idx,self.total_idx)
+        # st()
 
         if self.overfit:
             idx = 12
@@ -231,6 +233,10 @@ class ImageNet(Dataset):
             idx = 6
         
         fpath = self.fnames[idx]
+        main_filename = '/'.join(fpath.split('/')[-3:])
+        fpath = self.data_dir + '/' + main_filename
+
+
         foldername = fpath.split("/")[-2] 
         class_label = torch.tensor(int(self.folder_index_mapping[foldername][0]) - 1 )
         class_str = self.folder_index_mapping[foldername][1]

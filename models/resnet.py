@@ -9,7 +9,7 @@ import torch
 from torchvision.models.feature_extraction import create_feature_extractor
 
 import numpy as np
-from mask2former.modeling.pixel_decoder.fpn import build_pixel_decoder
+# from mask2former.modeling.pixel_decoder.fpn import build_pixel_decoder
 from detectron2.modeling import build_backbone
 import pickle
 import logging

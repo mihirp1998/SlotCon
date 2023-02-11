@@ -282,7 +282,7 @@ class SlotCon(nn.Module):
         self.k += 1
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
-        for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parametself.num_channelsers()):
+        for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
             param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
         for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
             param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)  
@@ -422,6 +422,25 @@ class SlotCon(nn.Module):
                 # st()
                 if self.ready_classifier:
                     pred_class_q1,pred_class_k1 = (enc_q['fc'],enc_k['fc'])
+                elif  self.args.fine_tune:
+                    B_split = enc_q.shape[0]
+                    enc_qk = torch.cat([enc_q,enc_k],0)
+                    enc_qk_ = enc_qk.flatten(2,3).permute(0,2,1)
+                    classifier_cls_token_ = self.classifier_cls_token.repeat(enc_qk_.shape[0],1,1)
+                    enc_qk_cls = torch.cat([classifier_cls_token_,enc_qk_],1)
+                    enc_qk_cls = self.classifier_embed(enc_qk_cls)
+                    enc_qk_cls = enc_qk_cls + self.classifier_pos_embed
+
+
+                    for blk in self.classifier_blocks:
+                        enc_qk_cls = blk(enc_qk_cls)
+
+                    enc_qk_cls = self.classifier_norm(enc_qk_cls)
+
+                    enc_cls = enc_qk_cls[:, :1, :]
+                    pred_class = self.classifier_pred(enc_cls)[:, 0]
+                    pred_class_q1 = pred_class[:B_split]
+                    pred_class_k1 = pred_class[B_split:]
                 elif self.args.max_pool_classifier:
                     pred_class_q1 = self.class_predict_q(enc_q)
                     pred_class_k1 = self.class_predict_k(enc_k)
@@ -492,12 +511,14 @@ class SlotCon(nn.Module):
 
             score_q1_ = score_q1.flatten(2,3)
             score_q2_ = score_q2.flatten(2,3)
+            # st()
 
             # self.mha(self.)
 
 
             # SSL loss
             q1_aligned, q2_aligned = self.invaug(score_q1, coords[0], flags[0]), self.invaug(score_q2, coords[1], flags[1])
+
             with torch.no_grad():
                 (k1, score_k1), (k2, score_k2) = self.grouping_k(y1), self.grouping_k(y2)
                 k1_aligned, k2_aligned = self.invaug(score_k1, coords[0], flags[0]), self.invaug(score_k2, coords[1], flags[1])
@@ -508,8 +529,10 @@ class SlotCon(nn.Module):
             if not (self.args.do_tta or self.args.fine_tune):
                 self.update_center(torch.cat([score_k1, score_k2]).permute(0, 2, 3, 1).flatten(0, 2))
 
+
             cont_loss += (1. - self.group_loss_weight) * self.ctr_loss_filtered(q1, k2, score_q1, score_k2) \
                 + (1. - self.group_loss_weight) * self.ctr_loss_filtered(q2, k1, score_q2, score_k1)
+
 
             # st()
 

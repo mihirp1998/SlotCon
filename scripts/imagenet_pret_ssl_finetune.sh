@@ -4,9 +4,9 @@ set -e
 set -x
 
 data_dir="/projects/katefgroup/datasets/ImageNet/"
-output_dir="./output/imagenet_classify_73_pret_ssl_finetune_tmp"
+output_dir="./output/imagenet_classify_73_pret_ssl_finetune5"
 
-CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --master_port 12342 --nproc_per_node=4 \
     main_pretrain.py \
     --dataset ImageNet \
     --data-dir ${data_dir} \
@@ -20,7 +20,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --teacher-temp 0.07 \
     --group-loss-weight 0.5 \
     \
-    --batch-size 2 \
+    --batch-size 128 \
     --optimizer lars \
     --base-lr 1.0 \
     --weight-decay 1e-5 \
@@ -35,7 +35,8 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --seg-weight 0.0 \
     --class-weight 0.7 \
     --test-dataset imagenetval \
-    --cont-weight 0.3  --do-only-classification --resume slotcon_imagenet_r50_200ep_full_checkpoint.pth --no-strict --fine-tune --d
+    --cont-weight 0.3  --do-only-classification --resume slotcon_imagenet_r50_200ep_full_checkpoint.pth --no-strict --fine-tune
+    # --d --log-freq 10
     # --d 
     # --resume output/slotcon_coco_r50_pretrained_s05c05_2_mask/current.pth --no-load-optim
     # --overfit --d --overfit --no-aug --min-scale 1.0

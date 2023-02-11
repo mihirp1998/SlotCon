@@ -284,6 +284,11 @@ def main(args):
         raise NotImplementedError
 
     # prepare data
+    import socket
+    hostname = socket.gethostname()
+    if 'imagenet' in args.dataset.lower():
+        if 'grogu' in hostname:
+            args.data_dir = '/grogu/datasets/imagenet'
     # st()
     transform = CustomDataAugmentation(args.image_size, args.min_scale, mask_size, args.no_aug)
     if "imagenet" in args.dataset.lower():
@@ -339,7 +344,7 @@ def main(args):
 
     if args.resume:
         load_checkpoint(args, model, optimizer, scheduler, scaler)
-        model.module.global_steps = args.start_epoch * len(train_loader)
+        model.module.global_steps = (args.start_epoch-1) * len(train_loader)
 
     for epoch in range(args.start_epoch, args.epochs + 1):
         train_sampler.set_epoch(epoch)
@@ -352,10 +357,10 @@ def main(args):
 def test(test_loader, model, args,scaler):
     model.eval()
     print('Testing')
-    # st()
     num_val = 1
     k1_acc = []
     q1_acc = []    
+    # st()
     with torch.no_grad():
         with torch.cuda.amp.autocast(scaler is not None):
             for i, batch in enumerate(test_loader):
@@ -367,15 +372,15 @@ def test(test_loader, model, args,scaler):
                 k1_acc.append(vis_dict['k1_classification_acc'])
                 q1_acc.append(vis_dict['q1_classification_acc'])
 
+                
+                if i ==num_val:
+                    break
                 # if i ==num_val:
                 #     vis_dict['k1_acc_avg'] = torch.mean(torch.tensor(k1_acc))
                 #     vis_dict['q1_acc_avg'] = torch.mean(torch.tensor(q1_acc))
                 
                 if not args.d and dist.get_rank() == 0:
                     wandb.log(vis_dict,step=model.module.global_steps)
-                
-                if i ==num_val:
-                    break
 
 
 
@@ -396,7 +401,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
     end_acc_k = []    
     end = time.time()
 
-    model.global_step = epoch * len(train_loader)
+    # model.global_step = (epoch-1) * len(train_loader)
 
     # st()
     train_len = len(train_loader)
@@ -443,7 +448,8 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             model.module.grouping_q.eval()
             model.module.grouping_k.eval()
             model.module.projector_q.eval()
-            model.module.projector_k.eval()            
+            model.module.projector_k.eval()
+            model.module.predictor_slot.eval()
 
 
         # compute output and loss
@@ -468,6 +474,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
         if not args.d and dist.get_rank() == 0:
             wandb.log(vis_dict,step=model.module.global_steps)
         # avg loss from batch size
+        # print(loss.item())
         loss_meter.update(loss.item(), crops[0].size(0))
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -519,7 +526,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                 f'Train: [{epoch}/{args.epochs}][{i}/{train_len}]  '
                 f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.4f}  '
                 f'time {batch_time.val:.4f} ({batch_time.avg:.4f})  '
-                f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})  ')
+                f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f}))  ')
 
 
 if __name__ == '__main__':
