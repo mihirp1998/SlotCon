@@ -15,7 +15,7 @@ import torch
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 
-from data.datasets import ImageFolder, ImageNet
+from data.datasets import ImageFolder, ImageNet, COCOPanopticNewBaselineDatasetMapper
 from data.transforms import CustomDataAugmentation
 from data.transforms import TestTransform
 
@@ -268,6 +268,13 @@ def load_checkpoint(args, model, optimizer, scheduler, scaler=None):
     else:
         logger.info("=> no checkpoint found at '{}'".format(args.resume)) 
 
+
+def trivial_batch_collator(batch):
+    """
+    A batch collator that does nothing.
+    """
+    return batch
+
 def main(args):
 
     if args.seed is not None:
@@ -275,27 +282,30 @@ def main(args):
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
-    if args.arch == 'resnet50':
-        mask_size = 7
-        mask_size = 28
-    elif args.arch == 'resnet50_l2' or args.arch == 'resnet50_maskformer':
-        mask_size = 56        
-    elif args.arch == 'resnet50_l' or args.arch == 'resnet50_pretrained':
-        mask_size = 28       
-    elif args.arch == 'resnet50_pretrained_classification':
-        mask_size = 7        
-    else:
-        raise NotImplementedError
-
+    # if args.arch == 'resnet50':
+    #     mask_size = 7
+    #     mask_size = 28
+    # elif args.arch == 'resnet50_l2' or args.arch == 'resnet50_maskformer':
+    #     mask_size = 56        
+    # elif args.arch == 'resnet50_l' or args.arch == 'resnet50_pretrained':
+    #     mask_size = 28       
+    # elif args.arch == 'resnet50_pretrained_classification':
+    #     mask_size = 7        
+    # else:
+    #     raise NotImplementedError
+    mask_size = args.image_size 
     # prepare data
     import socket
     hostname = socket.gethostname()
     if 'imagenet' in args.dataset.lower():
         if 'grogu' in hostname:
             args.data_dir = '/grogu/datasets/imagenet'
-    # st()
+
     transform = CustomDataAugmentation(args.image_size, args.min_scale, mask_size, args.no_aug)
-    if "imagenet" in args.dataset.lower():
+    if "coco_det" in args.dataset.lower():
+        train_dataset = COCOPanopticNewBaselineDatasetMapper(transform, args = args)
+        test_dataset = COCOPanopticNewBaselineDatasetMapper(transform, args = args)
+    elif "imagenet" in args.dataset.lower():
         train_dataset = ImageNet(args.dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)        
         test_dataset = ImageNet(args.test_dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)
     else:
@@ -305,18 +315,14 @@ def main(args):
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None), 
-        num_workers=args.num_workers, pin_memory=True, sampler=train_sampler, drop_last=True)
-    # st()
+        num_workers=args.num_workers,collate_fn=trivial_batch_collator, pin_memory=True, sampler=train_sampler, drop_last=True)
+
     # prepare test data
     test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset)
     test_loader = torch.utils.data.DataLoader(
         test_dataset, batch_size=args.batch_size, shuffle=(test_sampler is None), 
-        num_workers=args.num_workers, pin_memory=True, sampler=test_sampler, drop_last=True)
+        num_workers=args.num_workers,collate_fn=trivial_batch_collator, pin_memory=True, sampler=test_sampler, drop_last=True)
 
-    # st()
-
-
-    # st()
 
     args.num_instances = len(train_loader.dataset)
     logger.info(f"length of training dataset: {args.num_instances}")
@@ -368,10 +374,10 @@ def test(test_loader, model, args,scaler):
     with torch.no_grad():
         with torch.cuda.amp.autocast(scaler is not None):
             for i, batch in enumerate(test_loader):
-                image_norm, mask_norm,  crops, coords, flags, masks, class_labels, class_names, fpath = batch
+                image_norm, mask_norm,  crops, coords, flags, masks = batch
                 image_norm = image_norm.cuda(non_blocking=True)
                 mask_norm = mask_norm.cuda(non_blocking=True)                
-                vis_dict = model((image_norm, mask_norm, class_labels), is_test=True)
+                vis_dict = model((image_norm, mask_norm), is_test=True)
                 # st()
                 k1_acc.append(vis_dict['k1_classification_acc'])
                 q1_acc.append(vis_dict['q1_classification_acc'])
@@ -407,30 +413,20 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
 
     # model.global_step = (epoch-1) * len(train_loader)
 
-    # st()
     train_len = len(train_loader)
     for i, batch in enumerate(train_loader):
         # print(scheduler.after_scheduler.T_max)
         # print(f"num_iter {i}")
-        image_norm, mask_norm,  crops, coords, flags, masks, class_labels, class_str, fpath = batch
-        crops = [crop.cuda(non_blocking=True) for crop in crops]
-        coords = [coord.cuda(non_blocking=True) for coord in coords]
-        flags = [flag.cuda(non_blocking=True) for flag in flags]
-        masks = [mask.cuda(non_blocking=True) for mask in masks]
-
-
-        image_norm = image_norm.cuda(non_blocking=True)
-        mask_norm = mask_norm.cuda(non_blocking=True)
-        class_labels = class_labels.cuda(non_blocking=True)
+        # st()
 
 
         if ((i%(args.tta_steps) == 0 or args.overfit) and args.do_tta):
-            # st()
+            st()
             model.eval()
             with torch.no_grad():
                 with torch.cuda.amp.autocast(scaler is not None):
                     print("start")
-                    vis_dict = model((image_norm, mask_norm, class_labels), is_test=True)
+                    vis_dict = model((image_norm, mask_norm), is_test=True)
 
                     if not args.do_only_classification:
                         ari_q, ari_k = vis_dict['test_ari_score_q1'],vis_dict['test_ari_score_k1']
@@ -458,8 +454,8 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
 
         # compute output and loss
         with torch.cuda.amp.autocast(scaler is not None):
-            loss, vis_dict = model((crops, coords, flags, masks, class_labels,class_str))
-        
+            loss, vis_dict = model(batch)
+        # st()
         optimizer.zero_grad()
         if args.fp16:
             scaler.scale(loss).backward()
@@ -497,7 +493,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                 with torch.no_grad():
                     with torch.cuda.amp.autocast(scaler is not None):
                         # st()
-                        vis_dict = model((image_norm, mask_norm, class_labels), is_test=True)
+                        vis_dict = model((image_norm, mask_norm), is_test=True)
 
                         if not args.do_only_classification:
                             acc_q, acc_k = vis_dict['test_ari_score_q1'],vis_dict['test_ari_score_k1']

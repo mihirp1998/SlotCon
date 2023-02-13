@@ -4,11 +4,12 @@ import torch
 import torchvision
 from PIL import Image
 import random
-
+import torch.nn.functional as F
 from imagecorruptions import corrupt
 from panopticapi.utils import rgb2id
 from detectron2.data.datasets.builtin_meta import COCO_CATEGORIES
 import yaml, json
+from detectron2.data import detection_utils as utils
 
 
 import ipdb
@@ -17,6 +18,152 @@ st = ipdb.set_trace
 from PIL import Image
 from torch.utils.data import Dataset
 import pickle
+import copy
+
+from detectron2.structures import BitMasks, Boxes, Instances
+from detectron2.data.build import get_detection_dataset_dicts
+from panopticapi.utils import rgb2id
+
+
+class COCOPanopticNewBaselineDatasetMapper:
+    """
+    A callable which takes a dataset dict in Detectron2 Dataset format,
+    and map it into a format used by MaskFormer.
+
+    This dataset mapper applies the same transformation as DETR for COCO panoptic segmentation.
+
+    The callable currently does the following:
+
+    1. Read the image from "file_name"
+    2. Applies geometric transforms to the image and annotation
+    3. Find and applies suitable cropping to the image and annotation
+    4. Prepare image and annotation to Tensors
+    """
+
+
+    def __init__(
+        self,
+        transform_gen,
+        is_train=True,
+        args=None,
+    ):
+        """
+        NOTE: this interface is experimental.
+        Args:
+            is_train: for training or inference
+            augmentations: a list of augmentations or deterministic transforms to apply
+            crop_gen: crop augmentation
+            tfm_gens: data augmentation
+            image_format: an image format supported by :func:`detection_utils.read_image`.
+        """
+        self.img_format = 'RGB'
+        self.is_train = is_train
+        self.args = args
+        self.transform = transform_gen
+        self.dataset_dicts = get_detection_dataset_dicts(
+                ('coco_2017_train_panoptic',),
+                filter_empty=True,
+                min_keypoints=0,
+                proposal_files=None,
+            )
+
+    def __len__(self):
+        return len(self.dataset_dicts)
+    
+    def __getitem__(self, idx):
+        """
+        Args:
+            dataset_dict (dict): Metadata of one image, in Detectron2 Dataset format.
+
+        Returns:
+            dict: a format that builtin models in detectron2 accept
+        """
+
+        # st()
+
+        dataset_dict = self.dataset_dicts[idx]
+        dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
+        image = utils.read_image(dataset_dict["file_name"], format=self.img_format)
+        utils.check_image_size(dataset_dict, image)
+
+        # image, transforms = T.apply_transform_gens(self.tfm_gens, image)
+        image_shape = image.shape[:2]  # h, w
+
+        # Pytorch's dataloader is efficient on torch.Tensor due to shared-memory,
+        # but not efficient on large generic data structures due to the use of pickle & mp.Queue.
+        # Therefore it's important to use torch.Tensor.
+        image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
+
+        if not self.is_train:
+            # USER: Modify this if you want to keep them for some reason.
+            dataset_dict.pop("annotations", None)
+            return dataset_dict
+
+        if "pan_seg_file_name" in dataset_dict:
+            pan_seg_gt = utils.read_image(dataset_dict.pop("pan_seg_file_name"), "RGB")
+            segments_info = dataset_dict["segments_info"]
+
+            # apply the same transformation to panoptic segmentation
+            # pan_seg_gt = transforms.apply_segmentation(pan_seg_gt)
+
+
+
+            pan_seg_gt = rgb2id(pan_seg_gt)
+
+            
+            classes = []
+            masks = []
+
+            # st()
+
+            for segment_info in segments_info:
+                class_id = segment_info["category_id"]
+                if not segment_info["iscrowd"]:
+                    classes.append(class_id)
+                    masks.append(pan_seg_gt == segment_info["id"])
+
+            classes = np.array(classes)
+            gt_classes = torch.tensor(classes, dtype=torch.int64)
+            if len(masks) == 0:
+                # Some image does not have annotation (all ignored)
+                gt_masks = torch.zeros((0, pan_seg_gt.shape[-2], pan_seg_gt.shape[-1]))
+                gt_boxes = Boxes(torch.zeros((0, 4)))
+            else:
+                masks = BitMasks(
+                    torch.stack([torch.from_numpy(np.ascontiguousarray(x.copy())) for x in masks])
+                )
+                gt_masks = masks.tensor
+                gt_boxes = masks.get_bounding_boxes()
+
+            # dataset_dict["instances"] = instances
+
+        image_pil = Image.fromarray(image.permute(1,2,0).numpy().astype(np.uint8))
+        gt_masks = gt_masks.float()
+
+        return_val = self.transform(image_pil, gt_masks) 
+
+        image_norm, mask_norm,  crops, coords, flags, masks = return_val
+        num_masks = mask_norm.shape[0]
+        # st()
+        masks_norm_padded= F.pad(mask_norm, (0, 0, 0, 0, 0, 256 - num_masks), value=0)
+        masks_padded= [F.pad(mask, (0, 0, 0, 0, 0, 256 - num_masks), value=0) for mask in masks]
+        all_instances = []
+        for mask in masks:
+            instances = Instances(image_shape)
+            instances.gt_masks = mask
+            # instances.gt_boxes = is.get_bounding_boxes()
+            instances.gt_classes = gt_classes
+            all_instances.append(instances)
+        
+        dataset_dict['instances'] = all_instances
+        dataset_dict["image"] = crops
+        dataset_dict["flags"] = flags
+        dataset_dict["coords"] = coords
+
+        # st()
+        return dataset_dict
+
+
 
 class ImageFolder(Dataset):
     def __init__(
@@ -121,7 +268,7 @@ class ImageFolder(Dataset):
             # mask_resized = torchvision.transforms.Resize((size_val,size_val),torchvision.transforms.InterpolationMode.NEAREST)(torch.from_numpy(mask).unsqueeze(0))
             mask_resized = torch.from_numpy(mask)
             mask_val[idx] = mask_resized
-        # st()
+        st()
         self.total_idx += 1
         return_val = self.transform(image, mask_val) 
         return_val = list(return_val)

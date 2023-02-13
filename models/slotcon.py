@@ -8,13 +8,29 @@ import torchvision
 import matplotlib.pyplot as plt
 import wandb
 import numpy as np
-
+from detectron2.modeling import build_model
 from timm.models.vision_transformer import PatchEmbed, Block
 
+from mask2former import add_maskformer2_config
+from detectron2.projects.deeplab import add_deeplab_config
+from detectron2.config import get_cfg
 
 from hungarian_matcher import HungarianMatcher
+import copy
 import ipdb
 st = ipdb.set_trace
+
+
+def setup_cfg(config_file,opts):
+    # load config from file and command-line arguments
+    cfg = get_cfg()
+    add_deeplab_config(cfg)
+    add_maskformer2_config(cfg)
+    cfg.merge_from_file(config_file)
+    cfg.merge_from_list(opts)
+    cfg.freeze()
+    return cfg
+
 
 class DINOHead(nn.Module):
     def __init__(self, in_dim, use_bn=True, nlayers=3, hidden_dim=4096, bottleneck_dim=256):
@@ -181,51 +197,27 @@ class SlotCon(nn.Module):
         self.end_acc_mean_q = 0.0        
         self.start_acc_mean_k = 0.0
         self.end_acc_mean_k = 0.0
+        opts = ['MODEL.WEIGHTS', 'model_final_94dc52.pkl']
+        config_file = '../mask2former_baseline/Mask2Former/configs/coco//panoptic-segmentation/maskformer2_R50_bs16_50ep.yaml'
+
+        # if args.sl_layer:
+        #     self.encoder_q = encoder(head_type='second_last')
+        #     self.encoder_k = encoder(head_type='second_last')
+        # else:
         # st()
-        if args.sl_layer:
-            self.encoder_q = encoder(head_type='second_last')
-            self.encoder_k = encoder(head_type='second_last')
-        else:
-            self.encoder_q = encoder(head_type='early_return')
-            self.encoder_k = encoder(head_type='early_return')
+        cfg = setup_cfg(config_file,opts)
+        model = build_model(cfg)
+
+        self.encoder_q = model
+        self.encoder_k = model
+        
+        # self.encoder_q = encoder(head_type='early_return')
+        # self.encoder_k = encoder(head_type='early_return')
 
         # st()
 
 
         # st()
-        if args.do_only_classification:
-            if args.fine_tune:
-                classifier_embed_dim = 768
-                num_classes = 1000
-                self.classifier_cls_token = nn.Parameter(torch.randn(1, 1, self.num_channels), requires_grad=True)
-                self.classifier_embed = nn.Linear(self.num_channels, classifier_embed_dim, bias=True)
-                self.classifier_pos_embed = nn.Parameter(torch.randn(1, 50, classifier_embed_dim), requires_grad=True)  # fixed sin-cos embedding
-
-                dpr = [x.item() for x in torch.linspace(0, 0.0, 12)]
-                self.classifier_blocks = nn.ModuleList([
-                        Block(classifier_embed_dim, 8, 4, qkv_bias=True, norm_layer=nn.LayerNorm, drop_path=dpr[i])
-                    for i in range(12)])
-
-                self.classifier_norm = nn.LayerNorm(classifier_embed_dim)
-                self.classifier_pred = nn.Linear(classifier_embed_dim, num_classes)
-            elif self.ready_classifier:
-                pass
-            elif self.args.max_pool_classifier:
-                self.class_predict_k = nn.Sequential(nn.AdaptiveMaxPool2d((1,1)), nn.Flatten(), nn.Linear(2048, 1000))
-                self.class_predict_q = nn.Sequential(nn.AdaptiveMaxPool2d((1,1)), nn.Flatten(), nn.Linear(2048, 1000))
-                for param_q, param_k in zip(self.class_predict_q.parameters(), self.class_predict_k.parameters()):
-                    param_k.data.copy_(param_q.data)  # initialize
-                    param_k.requires_grad = False  # not update by gradient
-                nn.SyncBatchNorm.convert_sync_batchnorm(self.class_predict_q)
-                nn.SyncBatchNorm.convert_sync_batchnorm(self.class_predict_k)
-            else:
-                self.mha = nn.MultiheadAttention(1024, 1, batch_first=True)
-                self.key = nn.Linear(self.dim_out, 1024)
-                self.value = nn.Linear(self.dim_out, 1024)
-                self.query_embed = nn.Parameter(torch.randn(1, 1, 1024))
-                self.class_predict = nn.Sequential(nn.Linear(1024, 1024), nn.ReLU(), nn.Linear(1024, 1000))
-            self.class_loss = nn.CrossEntropyLoss()
-
 
 
         if args.do_seg_class:
@@ -472,23 +464,42 @@ class SlotCon(nn.Module):
             # loss = ari_score_q1
             return vis_dict
         else:
-            crops, coords, flags, masks, class_labels,class_str = input
+            # st()
+            input_0 = copy.deepcopy(input)
+            input_1 = copy.deepcopy(input)
+            input_keys = ['instances', 'image', 'flags', 'coords']
+
+            for input_idx in range(len(input_0)):
+                for key_val  in input_keys:
+                    assert len(input_0[input_idx][key_val]) == 2
+                    input_0[input_idx][key_val] = input_0[input_idx][key_val][0]
+
+
+            for input_idx in range(len(input_1)):
+                for key_val  in input_keys:
+                    assert len(input_1[input_idx][key_val]) == 2
+                    input_1[input_idx][key_val] = input_1[input_idx][key_val][1]
+
+            # inputs_1 = inputs['image']
+            st()
+            # crops, coords, flags, masks = input
 
             vis_dict = {}
 
-            if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
-                crops_vis_0 = self.unnormalize(crops[0])
-                crops_vis_img_1 = wandb.Image(crops_vis_0[:1], caption="input_image")
-                vis_dict['input_image_1'] = crops_vis_img_1
+            # if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
+            #     crops_vis_0 = self.unnormalize(crops[0])
+            #     crops_vis_img_1 = wandb.Image(crops_vis_0[:1], caption="input_image")
+            #     vis_dict['input_image_1'] = crops_vis_img_1
 
-                crops_vis_1 = self.unnormalize(crops[1])
-                crops_vis_img_2 = wandb.Image(crops_vis_1[:1], caption="input_image")
-                vis_dict['input_image_2'] = crops_vis_img_2
+            #     crops_vis_1 = self.unnormalize(crops[1])
+            #     crops_vis_img_2 = wandb.Image(crops_vis_1[:1], caption="input_image")
+            #     vis_dict['input_image_2'] = crops_vis_img_2
 
-                vis_dict['class_name'] = wandb.Html(class_str[0])
+            #     vis_dict['class_name'] = wandb.Html(class_str[0])
 
             # st()
-            enc_q_0, enc_q_1 = (self.encoder_q(crops[0]),self.encoder_q(crops[1]))
+            enc_q_0, enc_q_1 = (self.encoder_q(input_0),self.encoder_q(input_1))
+            st()
             if self.ready_classifier:
                 x1, x2 = self.projector_q(enc_q_0['layer4']), self.projector_q(enc_q_1['layer4'])
             else:
