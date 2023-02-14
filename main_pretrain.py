@@ -76,6 +76,7 @@ def get_parser():
     parser.add_argument('--max-pool-classifier', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
     parser.add_argument('--no-strict', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
     parser.add_argument('--fine-tune', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')            
+    parser.add_argument('--vit-probing', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')                
     
     
     # misc

@@ -172,9 +172,14 @@ class ImageNet(Dataset):
         #     self.corrupt_name = ''
         # else:
         #     self.corrupt_name, self.corrupt_level = corrupt_name.split('-') 
+        self.do_banana = False
+        
         
         if dataset == 'imagenetval':
             self.fnames = pickle.load(open('imagenet' + '/val_list.p','rb'))
+        elif dataset =='imagenetbanana':
+            self.do_banana = True
+            self.fnames = glob.glob(f'/projects/katefgroup/datasets/ObjectNet/objectnet-1.0/images/banana/*')
         elif dataset == 'imagenetval_corrupt_gauss':
             self.fnames = pickle.load(open('imagenet' + '/val_gaussian_noise_5.p','rb'))
         else:
@@ -186,17 +191,22 @@ class ImageNet(Dataset):
         # st()
         if args.arch == 'resnet50_pretrained_classification':
             self.folder_index_mapping = {}
+            self.category_index_mapping = {}
             torch_mapping = json.load(open("torch_imgnet_cls_index.json",'r'))
             for key,val in torch_mapping.items():
                 self.folder_index_mapping[val[0]] = [int(key)+1,val[1]]
+                self.category_index_mapping[val[1]] = [int(key)+1,val[0]]
         else:
             txtval = open('map_clsloc.txt','r')
             lines = txtval.readlines()
             dict_val = {}
+            self.category_index_mapping = {}
             for line in lines:
                 line = line.split(' ')
-                dict_val[line[0]] = line[1:]            
+                dict_val[line[0]] = line[1:]
+                self.category_index_mapping[line[2].replace('\n','')] = [int(line[1]),line[0]]
             self.folder_index_mapping = dict_val
+            # st()
             # self.folder_index_mapping = pickle.load(open('map_clsloc.p','rb'))
 
 
@@ -238,10 +248,15 @@ class ImageNet(Dataset):
 
 
         foldername = fpath.split("/")[-2] 
-        class_label = torch.tensor(int(self.folder_index_mapping[foldername][0]) - 1 )
-        class_str = self.folder_index_mapping[foldername][1]
+        if self.do_banana:
+            class_label = torch.tensor(int(self.category_index_mapping['banana'][0]) - 1 )
+            class_str = 'banana'
+        else:
+            class_label = torch.tensor(int(self.folder_index_mapping[foldername][0]) - 1 )
+            class_str = self.folder_index_mapping[foldername][1]
 
         image = Image.open(fpath).convert('RGB')
+        st()
         H,W = np.array(image).shape[:2]
     
         # if self.corrupt_name != '':

@@ -194,7 +194,7 @@ class SlotCon(nn.Module):
 
         # st()
         if args.do_only_classification:
-            if args.fine_tune:
+            if args.vit_probing:
                 classifier_embed_dim = 768
                 num_classes = 1000
                 self.classifier_cls_token = nn.Parameter(torch.randn(1, 1, self.num_channels), requires_grad=True)
@@ -422,7 +422,7 @@ class SlotCon(nn.Module):
                 # st()
                 if self.ready_classifier:
                     pred_class_q1,pred_class_k1 = (enc_q['fc'],enc_k['fc'])
-                elif  self.args.fine_tune:
+                elif  self.args.vit_probing:
                     B_split = enc_q.shape[0]
                     enc_qk = torch.cat([enc_q,enc_k],0)
                     enc_qk_ = enc_qk.flatten(2,3).permute(0,2,1)
@@ -667,7 +667,7 @@ class SlotCon(nn.Module):
                 # st()
                 if self.ready_classifier:
                     pred_class = torch.cat([enc_q_0['fc'],enc_q_1['fc']], 0)
-                elif self.args.fine_tune:
+                elif self.args.vit_probing:
                     enc_qs = torch.cat([enc_q_0,enc_q_1],0)
                     enc_qs_ = enc_qs.flatten(2,3).permute(0,2,1)
                     classifier_cls_token_ = self.classifier_cls_token.repeat(enc_qs_.shape[0],1,1)
