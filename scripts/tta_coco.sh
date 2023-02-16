@@ -4,10 +4,17 @@ set -e
 set -x
 
 data_dir="/scratch/coco"
-data_dir="/projects/katefgroup/datasets/coco_2017/val2017_gaussian_noise_5/"
-output_dir="./output/tta_coco_joint_73_gaussian5_sgd_f_tta_step5_3_vis"
+data_dir="/projects/katefgroup/datasets/coco/val2017_gaussian_noise_5/"
+data_dir="/projects/katefgroup/datasets/coco/val2017_snow_5/"
+data_dir="/projects/katefgroup/datasets/coco/val2017_motion_blur_5/"
+data_dir="/projects/katefgroup/datasets/coco/val2017_fog_5/"
 
-CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
+output_dir="./output/tta_coco_gaussian_noise_5"
+output_dir="./output/tta_coco_snow_5"
+output_dir="./output/tta_coco_motion_blur_5"
+output_dir="./output/tta_coco_fog_5"
+
+CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12339 --nproc_per_node=1 \
     main_pretrain.py \
     --dataset COCOval_corrupt \
     --data-dir ${data_dir} \
@@ -21,7 +28,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --teacher-temp 0.07 \
     --group-loss-weight 0.5 \
     \
-    --batch-size 64 \
+    --batch-size 128 \
     --optimizer sgd \
     --base-lr 0.01 \
     --weight-decay 0.0 \
@@ -29,15 +36,14 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --epochs 800 \
     --fp16 \
     \
-    --print-freq 1 \
+    --print-freq 10 \
     --save-freq 2 \
-    --num-workers 8 \
+    --num-workers 0 \
     --seg-weight 0.0 \
     --cont-weight 1.0 \
-    --annot-dir /projects/katefgroup/datasets/coco_2017/annotations/semantic_val2017/ \
+    --annot-dir /projects/katefgroup/datasets/coco/annotations/semantic_val2017/ \
     --tta-steps 5 \
-    --log-freq 1 \
-    --do-tta --resume output/coco_joint_73_new/current.pth --no-load-optim --num-workers 0
+    --do-tta --resume output/coco_joint_73_new/current.pth --no-load-optim
     # --overfit
     # --d
     #  --overfit 

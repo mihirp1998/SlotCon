@@ -3,13 +3,23 @@ import os
 import ipdb
 st = ipdb.set_trace
 import numpy as np
+import sys
 from imagecorruptions import corrupt
 from PIL import Image
 folder_name = '/projects/katefgroup/datasets/coco/val2017'
 coco_files = glob.glob(f"{folder_name}/*.jpg")
 severity_level = 5
 # st()
-corruption_name = 'gaussian_noise'
+# gaussian_noise, shot_noise, impulse_noise, defocus_blur,
+#                     glass_blur, motion_blur, zoom_blur, snow, frost, fog,
+#                     brightness, contrast, elastic_transform, pixelate,
+#                     jpeg_compression, speckle_noise, gaussian_blur, spatter,
+#                     saturate
+
+# ----
+#  val2017_fog_5 val2017_gaussian_noise_5  val2017_motion_blur_5/ val2017_snow_5/
+
+corruption_name = sys.argv[1]
 save_folder_name = f"{folder_name}_{corruption_name}_{severity_level}"
 
 try:

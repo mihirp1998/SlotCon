@@ -2,6 +2,8 @@ import argparse
 import json
 import os
 import random
+random.seed(0)
+
 import shutil
 import time
 import datetime
@@ -12,6 +14,8 @@ st = ipdb.set_trace
 
 import numpy as np
 import torch
+torch.manual_seed(0)
+
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 
@@ -77,7 +81,9 @@ def get_parser():
     parser.add_argument('--no-strict', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
     parser.add_argument('--fine-tune', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')            
     parser.add_argument('--vit-probing', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')                
-    
+    parser.add_argument('--only-test', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
+    parser.add_argument('--do-5k', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
+    parser.add_argument('--do-10', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')            
     
     # misc
     parser.add_argument('--annot-dir', type=str, default='/projects/katefgroup/datasets/coco/annotations/mod_semantic_train2017/', help='output director')
@@ -351,13 +357,17 @@ def main(args):
         load_checkpoint(args, model, optimizer, scheduler, scaler)
         model.module.global_steps = (args.start_epoch-1) * len(train_loader)
 
-    for epoch in range(args.start_epoch, args.epochs + 1):
-        train_sampler.set_epoch(epoch)
-        # train for one epoch
-        train(train_loader, test_loader, model, optimizer, scaler, scheduler, epoch, args)
 
-        if dist.get_rank() == 0 and (epoch % args.save_freq == 0 or epoch == args.epochs):
-            save_checkpoint(args, epoch, model, optimizer, scheduler, scaler)
+    if args.only_test:
+        test(test_loader, model, args, scaler)
+    else:
+        for epoch in range(args.start_epoch, args.epochs + 1):
+            train_sampler.set_epoch(epoch)
+            # train for one epoch
+            train(train_loader, test_loader, model, optimizer, scaler, scheduler, epoch, args)
+
+            if dist.get_rank() == 0 and (epoch % args.save_freq == 0 or epoch == args.epochs):
+                save_checkpoint(args, epoch, model, optimizer, scheduler, scaler)
 
 def test(test_loader, model, args,scaler):
     model.eval()
@@ -369,20 +379,26 @@ def test(test_loader, model, args,scaler):
     with torch.no_grad():
         with torch.cuda.amp.autocast(scaler is not None):
             for i, batch in enumerate(test_loader):
+                print(i,"example")
                 image_norm, mask_norm,  crops, coords, flags, masks, class_labels, class_names, fpath = batch
                 image_norm = image_norm.cuda(non_blocking=True)
                 mask_norm = mask_norm.cuda(non_blocking=True)                
-                vis_dict = model((image_norm, mask_norm, class_labels), is_test=True)
+                vis_dict = model((image_norm, mask_norm, class_labels, class_names), is_test=True)
                 # st()
-                k1_acc.append(vis_dict['k1_classification_acc'])
-                q1_acc.append(vis_dict['q1_classification_acc'])
+                # k1_acc.append(vis_dict['k1_classification_acc'])
+                # q1_acc.append(vis_dict['q1_classification_acc'])
 
-                
-                if i ==num_val:
-                    break
-                # if i ==num_val:
-                #     vis_dict['k1_acc_avg'] = torch.mean(torch.tensor(k1_acc))
-                #     vis_dict['q1_acc_avg'] = torch.mean(torch.tensor(q1_acc))
+                k1_acc = k1_acc + list(vis_dict['k1_classification_acc_unnorm'].cpu().numpy())  
+
+                q1_acc = q1_acc + list(vis_dict['k1_classification_acc_unnorm'].cpu().numpy())  
+
+                # st()
+                if not args.only_test:
+                    if i ==num_val:
+                        break
+                else:
+                    vis_dict['k1_acc_avg'] = sum(k1_acc)/len(k1_acc)
+                    vis_dict['q1_acc_avg'] = sum(q1_acc)/len(q1_acc)
                 
                 if not args.d and dist.get_rank() == 0:
                     wandb.log(vis_dict,step=model.module.global_steps)
@@ -393,6 +409,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     # switch to train mode
+    run_name = args.output_dir.split("/")[-1]
 
     model.train()
     num_params = count_parameters(model)
@@ -431,7 +448,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             with torch.no_grad():
                 with torch.cuda.amp.autocast(scaler is not None):
                     print("start")
-                    vis_dict = model((image_norm, mask_norm, class_labels), is_test=True)
+                    vis_dict = model((image_norm, mask_norm, class_labels, class_str), is_test=True)
 
                     if not args.do_only_classification:
                         ari_q, ari_k = vis_dict['test_ari_score_q1'],vis_dict['test_ari_score_k1']
@@ -456,23 +473,27 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             model.module.projector_k.eval()
             model.module.predictor_slot.eval()
 
-
-        # compute output and loss
-        with torch.cuda.amp.autocast(scaler is not None):
-            loss, vis_dict = model((crops, coords, flags, masks, class_labels,class_str))
-        
-        optimizer.zero_grad()
-        if args.fp16:
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.backward()
-            optimizer.step()
-
-        if not args.do_tta and scheduler is not None:
-            scheduler.step()
+        try:
+            # compute output and loss
+            with torch.cuda.amp.autocast(scaler is not None):
+                loss, vis_dict = model((crops, coords, flags, masks, class_labels,class_str))
+            
+            optimizer.zero_grad()
+            if args.fp16:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+            if not args.do_tta and scheduler is not None:
+                scheduler.step()
+        except RecursionError:
+            print('RecursionError')
+            loss = 0.0
+            vis_dict = {}
+            # st()
 
         vis_dict['lr'] = optimizer.param_groups[0]['lr']
 
@@ -486,7 +507,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
         end = time.time()
 
         # # general testing
-        if not args.do_tta:
+        if not args.do_tta :
             if (i+1)%(args.log_freq) == 0 or args.overfit:
                 test(test_loader, model, args, scaler)
         #     st()
@@ -498,7 +519,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                 with torch.no_grad():
                     with torch.cuda.amp.autocast(scaler is not None):
                         # st()
-                        vis_dict = model((image_norm, mask_norm, class_labels), is_test=True)
+                        vis_dict = model((image_norm, mask_norm, class_labels, class_str), is_test=True)
 
                         if not args.do_only_classification:
                             acc_q, acc_k = vis_dict['test_ari_score_q1'],vis_dict['test_ari_score_k1']
@@ -516,6 +537,8 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
 
                         model.module.set_means(start_mean_q, end_mean_q,start_mean_k, end_mean_k)
 
+                        print(f"Mean Scores: Start- {start_mean_k},{start_mean_q}; End- {end_mean_k},{end_mean_q}")
+
                         if not args.d and dist.get_rank() == 0:
                             wandb.log(vis_dict,step=model.module.global_steps)
 
@@ -529,6 +552,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             etas = batch_time.avg * (train_len - i)
             logger.info(
                 f'Train: [{epoch}/{args.epochs}][{i}/{train_len}]  '
+                f'Exp name: {run_name}'
                 f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.4f}  '
                 f'time {batch_time.val:.4f} ({batch_time.avg:.4f})  '
                 f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f}))  ')

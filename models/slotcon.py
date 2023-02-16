@@ -349,8 +349,11 @@ class SlotCon(nn.Module):
     def forward(self, input, is_test=False):
         if is_test:
             vis_dict = {}
-            image,masks_1,class_labels = input
+            image,masks_1,class_labels,class_str = input
             image_vis = self.unnormalize(image)
+            
+            vis_dict['test_class_name'] = wandb.Html(class_str[0])
+
             image_vis_img_1 = wandb.Image(image_vis[:1], caption="input_image")
             vis_dict['test_input_image_1'] = image_vis_img_1
             enc_q,enc_k = (self.encoder_q(image),self.encoder_k(image))
@@ -411,6 +414,7 @@ class SlotCon(nn.Module):
                 k1_num_correct = torch.sum(class_labels_valid*k1_correct).float()
                 k1_total_num = torch.sum(class_labels_valid).float()
                 k1_acc = k1_num_correct/k1_total_num
+                # st()
                 vis_dict['k1_classification_acc'] = k1_acc
 
                 # st()
@@ -453,14 +457,29 @@ class SlotCon(nn.Module):
 
 
                 pred_idx_q1 = torch.argmax(pred_class_q1.squeeze(1),dim=-1)
-                num_correct_q1 = torch.sum(pred_idx_q1==class_labels_merged).float()
+
+                pred_idx_q1_ = pred_idx_q1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
+                similarity_q1 = pred_idx_q1_==class_labels_merged
+                num_correct_q1 = torch.sum(similarity_q1.sum(-1).bool()).float()
+                # st()
+                # num_correct_q1 = torch.sum(pred_idx_q1==class_labels_merged).float()
                 acc_q1 = num_correct_q1/total_num
                 vis_dict['q1_classification_acc'] = acc_q1
+                vis_dict['q1_classification_acc_unnorm'] = similarity_q1.sum(-1).bool()
+
+
 
                 pred_idx_k1 = torch.argmax(pred_class_k1.squeeze(1),dim=-1)
-                num_correct_k1 = torch.sum(pred_idx_k1==class_labels_merged).float()
+                # num_correct_k1 = torch.sum(pred_idx_k1==class_labels_merged).float()
+
+                pred_idx_k1_ = pred_idx_k1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
+                similarity_k1 = pred_idx_k1_==class_labels_merged
+                num_correct_k1 = torch.sum(similarity_k1.sum(-1).bool()).float()
+
                 acc_k1 = num_correct_k1/total_num
+                # st()
                 vis_dict['k1_classification_acc'] = acc_k1
+                vis_dict['k1_classification_acc_unnorm'] = similarity_k1.sum(-1).bool()
                 # print(acc_q1,acc_k1)
                 # st():
 
@@ -484,8 +503,9 @@ class SlotCon(nn.Module):
                 crops_vis_1 = self.unnormalize(crops[1])
                 crops_vis_img_2 = wandb.Image(crops_vis_1[:1], caption="input_image")
                 vis_dict['input_image_2'] = crops_vis_img_2
-
-                vis_dict['class_name'] = wandb.Html(class_str[0])
+    
+                if isinstance(class_str[0][0], type(' ')):
+                    vis_dict['class_name'] = wandb.Html(class_str[0][0])
 
             # st()
             enc_q_0, enc_q_1 = (self.encoder_q(crops[0]),self.encoder_q(crops[1]))
@@ -655,6 +675,8 @@ class SlotCon(nn.Module):
                 total_num = torch.sum(class_labels_valid).float()
                 acc = num_correct/total_num
                 vis_dict['classification_acc'] = acc
+            else:
+                class_loss = 0.0
                 # st()
                 # vis_dict['predicted_segments'] = acc
 
@@ -693,9 +715,22 @@ class SlotCon(nn.Module):
                     query_embed = self.query_embed.repeat(B*2,1,1)
                     cls_token,_ = self.mha(query_embed,self.key(qs),self.value(qs))
                     pred_class = self.class_predict(cls_token)
-                class_loss = self.class_loss(pred_class.squeeze(1),class_labels_merged)
+                # st()
+
+                # class_loss = 0.0
+                if len(class_labels_merged.shape) ==1:
+                    class_loss = self.class_loss(pred_class.squeeze(1),class_labels_merged)
+                else:
+                    class_loss = self.class_loss(pred_class.squeeze(1),class_labels_merged[:,0])
                 pred_idx = torch.argmax(pred_class.squeeze(1),dim=-1)
-                num_correct = torch.sum(pred_idx==class_labels_merged).float()
+
+
+                pred_idx_ = pred_idx.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
+                similarity = pred_idx_==class_labels_merged
+                num_correct = torch.sum(similarity.sum(-1).bool()).float()
+
+                # st()
+                # num_correct = torch.sum(pred_idx==class_labels_merged).float()
                 total_num = torch.tensor(class_labels_merged.shape[0]).float()
                 acc = num_correct/total_num
                 vis_dict['classification_acc'] = acc

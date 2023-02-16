@@ -4,6 +4,9 @@ import torch
 import torchvision
 from PIL import Image
 import random
+random.seed(0)
+torch.manual_seed(0)
+import os
 
 from imagecorruptions import corrupt
 from panopticapi.utils import rgb2id
@@ -53,6 +56,7 @@ class ImageFolder(Dataset):
             self.fnames = list(glob.glob(data_dir + '/*.jpg'))            
         else:
             raise NotImplementedError
+        # st()
         self.dataset = dataset
         self.num_protos = num_protos
         # st()
@@ -100,8 +104,8 @@ class ImageFolder(Dataset):
             image = Image.open(fpath).convert('RGB')
             filename = fpath.split('/')[-1]
             panoptic_seg = Image.open(f'{self.annot_dir}/{filename}'.replace('jpg','png')).convert('RGB')
-            # panoptic_seg_id = np.array(panoptic_seg)[:,:,0]
-            panoptic_seg_id = rgb2id(np.array(panoptic_seg))
+            panoptic_seg_id = np.array(panoptic_seg)[:,:,0]
+            # panoptic_seg_id = rgb2id(np.array(panoptic_seg))
             # st()
         
         panoptic_seg_unique_id = np.unique(panoptic_seg_id)
@@ -172,16 +176,59 @@ class ImageNet(Dataset):
         #     self.corrupt_name = ''
         # else:
         #     self.corrupt_name, self.corrupt_level = corrupt_name.split('-') 
-        self.do_banana = False
+        self.do_objectnet = False
+        self.corrupt_imgnet = False
+        # st()
         
         
         if dataset == 'imagenetval':
             self.fnames = pickle.load(open('imagenet' + '/val_list.p','rb'))
-        elif dataset =='imagenetbanana':
-            self.do_banana = True
-            self.fnames = glob.glob(f'/projects/katefgroup/datasets/ObjectNet/objectnet-1.0/images/banana/*')
-        elif dataset == 'imagenetval_corrupt_gauss':
-            self.fnames = pickle.load(open('imagenet' + '/val_gaussian_noise_5.p','rb'))
+            if args.do_5k:
+                if os.path.exists('imagenet' + '/val_list_5k.p'):
+                    self.fnames = pickle.load(open('imagenet' + '/val_list_5k.p','rb'))
+                else:
+                    random.shuffle(self.fnames)
+                    self.fnames = self.fnames[:5000]
+                    pickle.dump(self.fnames, open('imagenet' + '/val_list_5k.p','wb'))
+            if args.do_10:
+                if os.path.exists('imagenet' + '/val_list_10.p'):
+                    self.fnames = pickle.load(open('imagenet' + '/val_list_10.p','rb'))
+                else:
+                    random.shuffle(self.fnames)
+                    self.fnames = self.fnames[:10]
+                    pickle.dump(self.fnames, open('imagenet' + '/val_list_10.p','wb'))
+            
+        elif dataset =='imagenet_objectnet':
+            self.do_objectnet = True
+            self.objectnet_cats = json.load(open('mihir_objectnet_to_imagenet_1k.json','r'))
+            # st()
+            if os.path.exists('objectnet_files_5k.p'):
+                self.fnames = pickle.load(open('objectnet_files_5k.p','rb'))
+            else:
+                self.fnames = []
+                for objectnet_cat in self.objectnet_cats:
+                    objectdir = f'{args.data_dir}/images/{objectnet_cat}'
+                    self.fnames += glob.glob(objectdir + '/*png')
+                random.shuffle(self.fnames)
+                pickle.dump(self.fnames[:5000],open('objectnet_files_5k.p','wb'))
+            # st()
+            # self.fnames = glob.glob(f'/projects/katefgroup/datasets/ObjectNet/objectnet-1.0/images/banana/*')
+        elif 'imagenet_corrupt' in dataset:
+            # st()
+            _, noise_type, noise_level = dataset.split('-')
+            folder_name = f'{data_dir}/{noise_type}/{noise_level}/*/*.JPEG'
+            filename = f'{data_dir}/{noise_type}_{noise_level}_510.p'
+            self.corrupt_imgnet = True
+            # st()
+            if os.path.exists(filename):
+                self.fnames = pickle.load(open(filename,'rb'))
+            else:
+                self.fnames = glob.glob(folder_name)
+                random.shuffle(self.fnames)
+                self.fnames = self.fnames[:510]
+                pickle.dump(self.fnames,open(filename,'wb'))
+            # st()
+            # self.fnames = pickle.load(open('imagenet' + '/val_gaussian_noise_5.p','rb'))
         else:
             self.fnames = pickle.load(open('imagenet' + '/train_list.p','rb'))
         # with open(f'{data_dir}/train/index_synset.yaml', 'r') as file:
@@ -221,20 +268,26 @@ class ImageNet(Dataset):
         self.fnames = np.array(self.fnames) # to avoid memory leak
         self.transform = transform
         self.total_idx = 0
+        self.old_idx = 0
 
     def __len__(self):
         if self.do_tta:
-            return 2000000
+            return len(self.fnames)*self.tta_steps*self.batch_size
         else:
             return len(self.fnames)
 
     def __getitem__(self, idx):
         # print(idx,self.total_idx)
+        # print(len(self.fnames)*self.tta_steps*self.batch_size)
         if self.do_tta:
             num_iter = self.total_idx//self.batch_size 
             idx = num_iter//self.tta_steps
+            if idx != self.old_idx:
+                self.old_idx = idx
+                print(f'Idx is: {self.old_idx}')
         # print(idx,self.total_idx)
         # st()
+        # if
 
         if self.overfit:
             idx = 12
@@ -243,21 +296,36 @@ class ImageNet(Dataset):
             idx = 6
         
         fpath = self.fnames[idx]
-        main_filename = '/'.join(fpath.split('/')[-3:])
+        if self.corrupt_imgnet:
+            main_filename = '/'.join(fpath.split('/')[-4:])
+        else:
+            main_filename = '/'.join(fpath.split('/')[-3:])
         fpath = self.data_dir + '/' + main_filename
-
+        # st()
 
         foldername = fpath.split("/")[-2] 
-        if self.do_banana:
-            class_label = torch.tensor(int(self.category_index_mapping['banana'][0]) - 1 )
-            class_str = 'banana'
+        if self.do_objectnet:
+            class_label = []
+            class_str = []
+            # st()
+            for object_val in self.objectnet_cats[foldername]:
+                class_label.append(torch.tensor(int(self.folder_index_mapping[object_val[1]][0]) - 1 ))
+                class_str.append(self.folder_index_mapping[object_val[1]][1])
+            class_label = np.array(class_label)
+                
+            # class_str = 'banana'
         else:
             class_label = torch.tensor(int(self.folder_index_mapping[foldername][0]) - 1 )
             class_str = self.folder_index_mapping[foldername][1]
 
         image = Image.open(fpath).convert('RGB')
-        st()
+        
+        if self.do_objectnet:
+            image = Image.fromarray(np.array(image)[2:-2,2:-2])
+            # st()
+            
         H,W = np.array(image).shape[:2]
+        # st()
     
         # if self.corrupt_name != '':
         #     image = corrupt(np.array(image), corruption_name=self.corrupt_name, severity=int(self.corrupt_level))
