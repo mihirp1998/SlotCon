@@ -3,13 +3,18 @@
 set -e
 set -x
 
-data_dir="/projects/katefgroup/datasets/ImageNet/"
 data_dir='/projects/katefgroup/datasets/ObjectNet/objectnet-1.0/'
-output_dir="./output/tta_imagenet_classify_pret_sup_2_imagenetbanana2_1step_highlr"
-
-CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12347 --nproc_per_node=1 \
+data_dir="/projects/katefgroup/datasets/ImageNet/"
+data_dir='/projects/katefgroup/datasets/imagenet_c/'
+output_dir="./output/tta_imagenet_val_10_1step_highler"
+output_dir="./output/tta_imagenet_corrupt_motion_blur_5_lowlr_5step_2"
+output_dir="./output/tta_imagenet_corrupt_snow_5_lowlr_5step_2"
+output_dir="./output/tta_imagenet_corrupt_gaussian_noise_5_10ex_4"
+# imagenet_corrupt-snow-5
+# imagenetval
+CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12339 --nproc_per_node=1 \
     main_pretrain.py \
-    --dataset imagenetbanana \
+    --dataset imagenet_corrupt-gaussian_noise-5 \
     --data-dir ${data_dir} \
     --output-dir ${output_dir} \
     \
@@ -23,7 +28,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12347 --nproc_per_node=1 \
     \
     --batch-size 128 \
     --optimizer sgd \
-    --base-lr 1.0 \
+    --base-lr 0.01 \
     --weight-decay 0.0 \
     --warmup-epoch 0 \
     --epochs 100 \
@@ -34,11 +39,12 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12347 --nproc_per_node=1 \
     --auto-resume \
     --num-workers 0 \
     --seg-weight 0.0 \
-    --tta-steps 1 \
+    --tta-steps 5 \
     --do-tta \
     --no-load-optim \
     --class-weight 0.0 \
-    --cont-weight 1.0  --do-only-classification --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth
+    --cont-weight 1.0  --do-only-classification --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth 
+#  --do-10
 # change optimizer to sgd
 # change num_worker to 0
 # add --do-tta
