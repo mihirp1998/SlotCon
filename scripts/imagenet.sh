@@ -29,7 +29,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --master_port 12342 --nproc_per_node=4 \
     --fp16 \
     \
     --print-freq 10 \
-    --save-freq 2 \
+    --save-freq 1 \
     --auto-resume \
     --num-workers 8 \
     --seg-weight 0.0 \

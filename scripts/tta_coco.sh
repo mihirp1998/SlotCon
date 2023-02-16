@@ -46,3 +46,4 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     #   --min-scale 0.5
     # --overfit 
     # --d
+# consider sgd momentum 0 and weight decay 0 coefficients
