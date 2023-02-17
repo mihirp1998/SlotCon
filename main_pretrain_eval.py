@@ -26,7 +26,8 @@ from data.transforms import TestTransform
 from models import resnet
 from models.slotcon import SlotCon
 from utils.lars import LARS
-from utils.logger import setup_logger
+import logging as logger
+# from utils.logger import setup_logger
 from utils.lr_scheduler import get_scheduler
 from utils.util import AverageMeter
 
@@ -108,8 +109,8 @@ def get_parser():
     parser.add_argument('--custom-lr', action='store_true', help='auto resume from current.pth')        
 
     args = parser.parse_args()
-    if os.environ["LOCAL_RANK"] is not None:
-        args.local_rank = int(os.environ["LOCAL_RANK"])
+    # if os.environ["LOCAL_RANK"] is not None:
+    #     args.local_rank = int(os.environ["LOCAL_RANK"])
     return args 
 
 def build_model(args):
@@ -202,7 +203,7 @@ def build_model(args):
         else:
             raise NotImplementedError
 
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
 
     return model, optimizer
 
@@ -243,10 +244,21 @@ def load_checkpoint(args, model, optimizer, scheduler, scaler=None):
         checkpoint = torch.load(args.resume, map_location='cpu')
         # st()
 
-        model.module.re_init(args)
-
-        if args.do_tta or args.fine_tune:
-            for key_val in  checkpoint['model'].keys():
+        model.re_init(args)
+        import copy
+        # st()
+        if args.do_tta or args.fine_tune or args.only_test:
+            checkpoint_keys = copy.deepcopy(list(checkpoint['model'].keys()))
+            for key_val in  checkpoint_keys:
+                mode_key_val = key_val.replace('module.','')
+                # st()
+                checkpoint['model'][mode_key_val] = checkpoint['model'][key_val]
+                checkpoint['model'].pop(key_val)
+                # checkpoint['model'][mode_key_val] = checkpoint['model'][mode_key_val.replace('_q','_k')]
+                # if "_q" in mode_key_val:
+                #     checkpoint['model'][mode_key_val] = checkpoint['model'][mode_key_val.replace('_q','_k')]
+            new_checkpoint_keys = copy.deepcopy(list(checkpoint['model'].keys()))                
+            for key_val in  new_checkpoint_keys:
                 if "_q" in key_val:
                     checkpoint['model'][key_val] = checkpoint['model'][key_val.replace('_q','_k')]
         # st()
@@ -309,13 +321,13 @@ def main(args):
         train_dataset = ImageFolder(args.dataset, args.data_dir, transform,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes)
         test_dataset = ImageFolder(args.test_dataset, args.data_dir, transform,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes)
 
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    train_sampler = None
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None), 
         num_workers=args.num_workers, pin_memory=True, sampler=train_sampler, drop_last=True)
     # st()
     # prepare test data
-    test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset)
+    test_sampler = None
     test_loader = torch.utils.data.DataLoader(
         test_dataset, batch_size=args.batch_size, shuffle=(test_sampler is None), 
         num_workers=args.num_workers, pin_memory=True, sampler=test_sampler, drop_last=True)
@@ -355,7 +367,7 @@ def main(args):
 
     if args.resume:
         load_checkpoint(args, model, optimizer, scheduler, scaler)
-        model.module.global_steps = (args.start_epoch-1) * len(train_loader)
+        model.global_steps = (args.start_epoch-1) * len(train_loader)
 
 
     if args.only_test:
@@ -366,7 +378,7 @@ def main(args):
             # train for one epoch
             train(train_loader, test_loader, model, optimizer, scaler, scheduler, epoch, args)
 
-            if dist.get_rank() == 0 and (epoch % args.save_freq == 0 or epoch == args.epochs):
+            if (epoch % args.save_freq == 0 or epoch == args.epochs):
                 save_checkpoint(args, epoch, model, optimizer, scheduler, scaler)
 
 def get_children(model: torch.nn.Module):
@@ -392,10 +404,11 @@ def test(test_loader, model, args,scaler):
     print('Testing')
     num_val = 1
     k1_acc = []
-    q1_acc = []    
-    model.module.eval()
+    q1_acc = []
+    model.cuda()    
+    model.eval()
     # st()
-    # get_children(model.module)
+    get_children(model)
     # for name, module in  model.module.named_modules():
 
     #     if 'bn' in name:
@@ -409,12 +422,14 @@ def test(test_loader, model, args,scaler):
                 image_norm, mask_norm,  crops, coords, flags, masks, class_labels, class_names, fpath = batch
                 image_norm = image_norm.cuda(non_blocking=True)
                 mask_norm = mask_norm.cuda(non_blocking=True)    
-                # st()            
+                class_labels = class_labels.cuda(non_blocking=True)
+                # st()       
+                print(fpath)     
                 vis_dict = model((image_norm, mask_norm, class_labels, class_names), is_test=True)
                 # st()
                 # k1_acc.append(vis_dict['k1_classification_acc'])
                 # q1_acc.append(vis_dict['q1_classification_acc'])
-                # print(vis_dict['k1_classification_acc'],vis_dict['q1_classification_acc'])
+                print(vis_dict['k1_classification_acc'],vis_dict['q1_classification_acc'])
 
                 k1_acc = k1_acc + list(vis_dict['k1_classification_acc_unnorm'].cpu().numpy())  
 
@@ -427,9 +442,8 @@ def test(test_loader, model, args,scaler):
                 else:
                     vis_dict['k1_acc_avg'] = sum(k1_acc)/len(k1_acc)
                     vis_dict['q1_acc_avg'] = sum(q1_acc)/len(q1_acc)
-
-                print("k1_acc_avg",vis_dict['k1_acc_avg'], "q1_acc_avg",vis_dict['q1_acc_avg'], list(vis_dict['k1_classification_acc_unnorm'].cpu().numpy()) )
-                if not args.d and dist.get_rank() == 0:
+                print("k1_acc_avg",vis_dict['k1_acc_avg'], "q1_acc_avg",vis_dict['q1_acc_avg'], len(k1_acc), fpath, list(vis_dict['q1_classification_acc_unnorm'].cpu().numpy()) )
+                if not args.d:
                     wandb.log(vis_dict,step=model.module.global_steps)
 
 
@@ -460,6 +474,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
         # print(scheduler.after_scheduler.T_max)
         # print(f"num_iter {i}")
         image_norm, mask_norm,  crops, coords, flags, masks, class_labels, class_str, fpath = batch
+        print(fpath)
         crops = [crop.cuda(non_blocking=True) for crop in crops]
         coords = [coord.cuda(non_blocking=True) for coord in coords]
         flags = [flag.cuda(non_blocking=True) for flag in flags]
@@ -488,7 +503,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                         start_acc_q.append(class_acc_q)
                         start_acc_k.append(class_acc_k)
                     
-                    if not args.d and dist.get_rank() == 0:
+                    if not args.d:
                         wandb.log(vis_dict,step=model.module.global_steps)
 
         model.train()
@@ -526,7 +541,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
 
         vis_dict['lr'] = optimizer.param_groups[0]['lr']
 
-        if not args.d and dist.get_rank() == 0:
+        if not args.d:
             wandb.log(vis_dict,step=model.module.global_steps)
         # avg loss from batch size
         # print(loss.item())
@@ -568,7 +583,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
 
                         print(f"Mean Scores: Start- {start_mean_k},{start_mean_q}; End- {end_mean_k},{end_mean_q}")
 
-                        if not args.d and dist.get_rank() == 0:
+                        if not args.d:
                             wandb.log(vis_dict,step=model.module.global_steps)
 
                         load_checkpoint(args, model, optimizer, scheduler, scaler)
@@ -591,29 +606,29 @@ if __name__ == '__main__':
     args = get_parser()
 
     run_name = args.output_dir.split("/")[-1]
+    args.world_size = 1
 
-    torch.cuda.set_device(args.local_rank)
-    torch.distributed.init_process_group(backend='nccl', init_method='env://')
-    cudnn.benchmark = True
+    # torch.cuda.set_device(args.local_rank)
+    # torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    # cudnn.benchmark = True
 
-    args.world_size = dist.get_world_size()
-    args.batch_size = int(args.batch_size / args.world_size)
+    # args.world_size = dist.get_world_size()
+    # args.batch_size = int(args.batch_size / args.world_size)
 
     # setup logger
     os.makedirs(args.output_dir, exist_ok=True)
-    logger = setup_logger(output=args.output_dir,
-                          distributed_rank=dist.get_rank(), name="slotcon")
-    if dist.get_rank() == 0:
-        path = os.path.join(args.output_dir, "config.json")
-        with open(path, 'w') as f:
-            json.dump(vars(args), f, indent=2)
-        logger.info("Full config saved to {}".format(path))
-        if not args.d:
-            if run_name is not '':
-                wandb.init(project='slot_con_4', entity="mihirp",id= run_name)
-            else:
-                wandb.init(project='slot_con_4', entity="mihirp")
-            wandb.config.update(args)
+    # logger = setup_logger(output=args.output_dir,
+    #                       distributed_rank=dist.get_rank(), name="slotcon")
+
+    path = os.path.join(args.output_dir, "config.json")
+    with open(path, 'w') as f:
+        json.dump(vars(args), f, indent=2)
+    logger.info("Full config saved to {}".format(path))
+    if not args.d:
+        if run_name is not '':
+            wandb.init(project='slot_con_3', entity="mihirp",id= run_name)
+        else:
+            wandb.init(project='slot_con_3', entity="mihirp")
     # print args
     logger.info(
         "\n".join("%s: %s" % (k, str(v))
@@ -621,4 +636,3 @@ if __name__ == '__main__':
     )
 
     main(args)
-    # switch 

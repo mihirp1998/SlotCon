@@ -216,6 +216,8 @@ class SlotCon(nn.Module):
                 for param_q, param_k in zip(self.class_predict_q.parameters(), self.class_predict_k.parameters()):
                     param_k.data.copy_(param_q.data)  # initialize
                     param_k.requires_grad = False  # not update by gradient
+                # self.class_predict_q.eval()
+                # self.class_predict_k.eval()
                 nn.SyncBatchNorm.convert_sync_batchnorm(self.class_predict_q)
                 nn.SyncBatchNorm.convert_sync_batchnorm(self.class_predict_k)
             else:
@@ -239,6 +241,8 @@ class SlotCon(nn.Module):
 
         nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
         nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_k)
+        # self.encoder_k.eval()
+        # self.encoder_q.eval()
 
         self.group_loss_weight = args.group_loss_weight
         self.student_temp = args.student_temp
@@ -253,6 +257,8 @@ class SlotCon(nn.Module):
             
         nn.SyncBatchNorm.convert_sync_batchnorm(self.projector_q)
         nn.SyncBatchNorm.convert_sync_batchnorm(self.projector_k)
+        # self.projector_k.eval()
+        # self.projector_q.eval()
 
         self.num_prototypes = args.num_prototypes
         self.center_momentum = args.center_momentum
@@ -262,6 +268,7 @@ class SlotCon(nn.Module):
         self.predictor_slot = DINOHead(self.dim_out, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
 
         nn.SyncBatchNorm.convert_sync_batchnorm(self.predictor_slot)
+        # self.predictor_slot.eval()
             
         for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
             param_k.data.copy_(param_q.data)  # initialize
@@ -353,10 +360,18 @@ class SlotCon(nn.Module):
             image_vis = self.unnormalize(image)
             
             vis_dict['test_class_name'] = wandb.Html(class_str[0])
+            # print(self.predictor_slot.mlp[1].running_mean.sum())
+            # print(list(self.encoder_k.model2.layer1.modules())[1].bn3.running_mean.sum())
+            # print(self.encoder_k.model2.bn1.running_mean.sum())
+            # st()
 
             image_vis_img_1 = wandb.Image(image_vis[:1], caption="input_image")
             vis_dict['test_input_image_1'] = image_vis_img_1
             enc_q,enc_k = (self.encoder_q(image),self.encoder_k(image))
+            # return enc_q['fc']
+            # st()
+            # print(enc_k['fc'].sum(-1), image.sum([1,2,3]))
+            # st()
             if self.ready_classifier:
                 x1, y1 = self.projector_q(enc_q['layer4']), self.projector_k(enc_k['layer4'])
             else:
@@ -457,29 +472,46 @@ class SlotCon(nn.Module):
 
 
                 pred_idx_q1 = torch.argmax(pred_class_q1.squeeze(1),dim=-1)
-
-                pred_idx_q1_ = pred_idx_q1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
-                similarity_q1 = pred_idx_q1_==class_labels_merged
-                num_correct_q1 = torch.sum(similarity_q1.sum(-1).bool()).float()
+                pred_idx_k1 = torch.argmax(pred_class_k1.squeeze(1),dim=-1)
+                # st()
+                if len(class_labels_merged.shape) ==1:
+                    pred_idx_q1_ = pred_idx_q1
+                    pred_idx_k1_ = pred_idx_k1
+                    similarity_q1 = pred_idx_q1_==class_labels_merged
+                    similarity_k1 = pred_idx_k1_==class_labels_merged
+                    vis_dict['k1_classification_acc_unnorm'] = similarity_k1
+                    vis_dict['q1_classification_acc_unnorm'] = similarity_q1                    
+                else:
+                    pred_idx_q1_ = pred_idx_q1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
+                    pred_idx_k1_ = pred_idx_k1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
+                    similarity_q1 = pred_idx_q1_==class_labels_merged
+                    similarity_k1 = pred_idx_k1_==class_labels_merged
+                    similarity_k1 =similarity_k1.sum(-1).bool()
+                    similarity_q1 = similarity_q1.sum(-1).bool()
+                    vis_dict['k1_classification_acc_unnorm'] = similarity_k1
+                    vis_dict['q1_classification_acc_unnorm'] = similarity_q1
+                # st()
+                
+                num_correct_q1 = torch.sum(similarity_q1).float()
                 # st()
                 # num_correct_q1 = torch.sum(pred_idx_q1==class_labels_merged).float()
                 acc_q1 = num_correct_q1/total_num
+                
+                vis_dict['q1_fc'] = enc_q['fc']
+                vis_dict['k1_fc'] = enc_k['fc']
                 vis_dict['q1_classification_acc'] = acc_q1
-                vis_dict['q1_classification_acc_unnorm'] = similarity_q1.sum(-1).bool()
-
-
-
-                pred_idx_k1 = torch.argmax(pred_class_k1.squeeze(1),dim=-1)
                 # num_correct_k1 = torch.sum(pred_idx_k1==class_labels_merged).float()
 
-                pred_idx_k1_ = pred_idx_k1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
-                similarity_k1 = pred_idx_k1_==class_labels_merged
-                num_correct_k1 = torch.sum(similarity_k1.sum(-1).bool()).float()
+                
+                num_correct_k1 = torch.sum(similarity_k1).float()
 
                 acc_k1 = num_correct_k1/total_num
                 # st()
                 vis_dict['k1_classification_acc'] = acc_k1
-                vis_dict['k1_classification_acc_unnorm'] = similarity_k1.sum(-1).bool()
+                # st()
+                # if self.global_steps == 1811:
+                #     st()
+                
                 # print(acc_q1,acc_k1)
                 # st():
 
@@ -718,16 +750,18 @@ class SlotCon(nn.Module):
                 # st()
 
                 # class_loss = 0.0
-                if len(class_labels_merged.shape) ==1:
-                    class_loss = self.class_loss(pred_class.squeeze(1),class_labels_merged)
-                else:
-                    class_loss = self.class_loss(pred_class.squeeze(1),class_labels_merged[:,0])
                 pred_idx = torch.argmax(pred_class.squeeze(1),dim=-1)
 
-
-                pred_idx_ = pred_idx.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
-                similarity = pred_idx_==class_labels_merged
-                num_correct = torch.sum(similarity.sum(-1).bool()).float()
+                if len(class_labels_merged.shape) ==1:
+                    class_loss = self.class_loss(pred_class.squeeze(1),class_labels_merged)
+                    pred_idx_ = pred_idx
+                    similarity = pred_idx_==class_labels_merged
+                    num_correct = torch.sum(similarity).float()
+                else:
+                    class_loss = self.class_loss(pred_class.squeeze(1),class_labels_merged[:,0])
+                    pred_idx_ = pred_idx.unsqueeze(-1).repeat(1,class_labels_merged.shape[1])
+                    similarity = pred_idx_==class_labels_merged
+                    num_correct = torch.sum(similarity.sum(-1).bool()).float()
 
                 # st()
                 # num_correct = torch.sum(pred_idx==class_labels_merged).float()

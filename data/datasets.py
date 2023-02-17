@@ -171,7 +171,7 @@ class ImageNet(Dataset):
 
     ):
         super(ImageNet, self).__init__()
-        # st()
+        
         # if corrupt_name == '':
         #     self.corrupt_name = ''
         # else:
@@ -180,7 +180,7 @@ class ImageNet(Dataset):
         self.corrupt_imgnet = False
         # st()
         
-        
+        # st()
         if dataset == 'imagenetval':
             self.fnames = pickle.load(open('imagenet' + '/val_list.p','rb'))
             if args.do_5k:
@@ -213,11 +213,10 @@ class ImageNet(Dataset):
                 pickle.dump(self.fnames[:5000],open('objectnet_files_5k.p','wb'))
             # st()
             # self.fnames = glob.glob(f'/projects/katefgroup/datasets/ObjectNet/objectnet-1.0/images/banana/*')
-        elif 'imagenet_corrupt' in dataset:
-            # st()
+        elif 'imagenet_corrupt_mod' in dataset:            
             _, noise_type, noise_level = dataset.split('-')
-            folder_name = f'{data_dir}/{noise_type}/{noise_level}/*/*.JPEG'
-            filename = f'{data_dir}/{noise_type}_{noise_level}_510.p'
+            folder_name = f'{data_dir}/val_{noise_type}_{noise_level}/*/*.JPEG'
+            filename = f'{data_dir}/{noise_type}_{noise_level}_1000.p'
             self.corrupt_imgnet = True
             # st()
             if os.path.exists(filename):
@@ -225,7 +224,21 @@ class ImageNet(Dataset):
             else:
                 self.fnames = glob.glob(folder_name)
                 random.shuffle(self.fnames)
-                self.fnames = self.fnames[:510]
+                self.fnames = self.fnames[:1000]
+                pickle.dump(self.fnames,open(filename,'wb'))
+        elif 'imagenet_corrupt' in dataset:
+            # st()
+            _, noise_type, noise_level = dataset.split('-')
+            folder_name = f'{data_dir}/{noise_type}/{noise_level}/*/*.JPEG'
+            filename = f'{data_dir}/{noise_type}_{noise_level}_1000.p'
+            self.corrupt_imgnet = True
+            # st()
+            if os.path.exists(filename):
+                self.fnames = pickle.load(open(filename,'rb'))
+            else:
+                self.fnames = glob.glob(folder_name)
+                random.shuffle(self.fnames)
+                self.fnames = self.fnames[:1000]
                 pickle.dump(self.fnames,open(filename,'wb'))
             # st()
             # self.fnames = pickle.load(open('imagenet' + '/val_gaussian_noise_5.p','rb'))
@@ -234,7 +247,7 @@ class ImageNet(Dataset):
         # with open(f'{data_dir}/train/index_synset.yaml', 'r') as file:
         #     indexfolder_mapping = yaml.safe_load(file)pickle.dump(self.fnames,open(data_dir + '/val_list.p','wb'))
         # self.folder_index_mapping = {v: k for k, v in indexfolder_mapping.items()}
-        self.data_dir = args.data_dir
+        self.data_dir = data_dir
         # st()
         if args.arch == 'resnet50_pretrained_classification':
             self.folder_index_mapping = {}
@@ -255,11 +268,9 @@ class ImageNet(Dataset):
             self.folder_index_mapping = dict_val
             # st()
             # self.folder_index_mapping = pickle.load(open('map_clsloc.p','rb'))
-
-
+        # st()
         self.dataset = dataset
         self.num_protos = num_protos
-        # st()
         self.batch_size = batch_size
         self.tta_steps = tta_steps
         self.annot_dir = annot_dir

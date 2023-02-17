@@ -3,13 +3,12 @@
 set -e
 set -x
 
-data_dir='/projects/katefgroup/datasets/imagenet_c/'
 data_dir="/projects/katefgroup/datasets/ImageNet/"
+data_dir='/projects/katefgroup/datasets/imagenet_c/'
 output_dir="./output/test_imagenet_classify_ours_motion_blur-5_fix_10"
 
-CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12344 --nproc_per_node=1 \
-    main_pretrain.py \
-    --dataset ImageNet \
+CUDA_VISIBLE_DEVICES=0 python main_pretrain_eval.py \
+    --dataset imagenet_corrupt-motion_blur-5 \
     --data-dir ${data_dir} \
     --output-dir ${output_dir} \
     \
@@ -21,7 +20,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12344 --nproc_per_node=1 \
     --teacher-temp 0.07 \
     --group-loss-weight 0.5 \
     \
-    --batch-size 64 \
+    --batch-size 50 \
     --optimizer lars \
     --base-lr 1.0 \
     --weight-decay 1e-5 \
@@ -32,11 +31,11 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12344 --nproc_per_node=1 \
     --print-freq 40 \
     --save-freq 2 \
     --auto-resume \
-    --num-workers 8 \
+    --num-workers 0 \
     --seg-weight 0.0 \
     --class-weight 1.0 \
-    --test-dataset imagenetval \
-    --cont-weight 0.0  --do-only-classification --only-test --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth --d --seed 0 --do-5k
+    --test-dataset imagenet_corrupt-motion_blur-5 \
+    --cont-weight 0.0  --do-only-classification --only-test --d
     # --d
     # --do-10 --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth
     # --d --d

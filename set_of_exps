@@ -1,0 +1,19 @@
+
+
+-> get numbers on imagenet corruptions -- GET ALL NUMBERS
+
+-> go to mask2former with coco
+
+-> try different things to improve tta results
+    try global loss
+    try only local loss
+    update teacher
+    update center?
+    change augmentations in imagenet
+
+
+-> go to depth prediction
+
+-> go to speaker data
+
+-> go to objectnet

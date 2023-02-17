@@ -4,17 +4,17 @@ set -e
 set -x
 
 data_dir='/projects/katefgroup/datasets/ObjectNet/objectnet-1.0/'
-data_dir="/projects/katefgroup/datasets/ImageNet/"
 data_dir='/projects/katefgroup/datasets/imagenet_c/'
+data_dir="/projects/katefgroup/datasets/ImageNet/"
 output_dir="./output/tta_imagenet_val_10_1step_highler"
 output_dir="./output/tta_imagenet_corrupt_motion_blur_5_lowlr_5step_2"
 output_dir="./output/tta_imagenet_corrupt_snow_5_lowlr_5step_2"
-output_dir="./output/tta_imagenet_corrupt_gaussian_noise_5_10ex_4"
+output_dir="./output/tta_imagenet_corrupt_gaussian_noise_5"
 # imagenet_corrupt-snow-5
 # imagenetval
 CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12339 --nproc_per_node=1 \
     main_pretrain.py \
-    --dataset imagenet_corrupt-gaussian_noise-5 \
+    --dataset imagenet_corrupt_mod-gaussian_noise-5 \
     --data-dir ${data_dir} \
     --output-dir ${output_dir} \
     \

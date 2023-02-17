@@ -300,10 +300,14 @@ class CustomDataAugmentation(object):
         crops_transformed.append(self.global_transfo1(crops[0]))
         crops_transformed.append(self.global_transfo2(crops[1]))
 
-
         image_norm, _, mask_norm = self.test_two_crop(image, mask)
         image_norm = self.test_global_transfo(image_norm[0])
         mask_norm = mask_norm[0]
+
+
+        # st()
+        # image_norm = self.normalize_image(image)
+        # mask_norm = self.normalize_mask(mask)
         # print(image_norm[0].shape)
         # print((np.array(image_norm[0]) == np.array(image_norm[1])).all())
 
