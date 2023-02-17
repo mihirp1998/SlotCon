@@ -5,12 +5,22 @@ st = ipdb.set_trace
 import pickle
 import numpy as np
 from imagecorruptions import corrupt
+import sys
 from PIL import Image
 folder_name = '/projects/katefgroup/datasets/ImageNet'
 
+# gaussian_noise, shot_noise, impulse_noise, defocus_blur,
+#                     glass_blur, motion_blur, zoom_blur, snow, frost, fog,
+#                     brightness, 
+# contrast, elastic_transform, pixelate,
+# still to do:
+#                     jpeg_compression, speckle_noise, gaussian_blur, spatter,
+#                     saturate
+
+
 severity_level = 5
 # st()
-corruption_name = 'gaussian_noise'
+corruption_name = sys.argv[1]
 save_folder_name = f"{folder_name}/val_{corruption_name}_{severity_level}"
 
 filename = f'{folder_name}/val_list.p'
