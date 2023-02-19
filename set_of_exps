@@ -4,12 +4,21 @@
 
 -> go to mask2former with coco
 
--> try different things to improve tta results
+-> changes during tta
     try global loss
-    try only local loss
-    update teacher
-    update center?
-    change augmentations in imagenet
+        different weights for local-global loss
+    update teacher - play with momentum
+    update center? - play with momentum
+    different learning rate
+    remove momentum etc from sgd optimizer
+    weight decay?
+    remove fp16?
+    increase tta steps
+    play with student/teacher temperature??
+    try min-max scale  augmentations during tta
+
+-> changes in joint trianing
+    change augmentations to ones in imagenet
 
 
 -> go to depth prediction
