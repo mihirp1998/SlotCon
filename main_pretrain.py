@@ -57,6 +57,9 @@ def get_parser():
     parser.add_argument('--student-temp', default=0.1, type=float, help='student temperature')
     parser.add_argument('--center-momentum', default=0.9, type=float, help='momentum for the center')
     parser.add_argument('--group-loss-weight', default=0.5, type=float, help='balancing weight of the grouping loss')
+    
+    parser.add_argument('--update-center-tta', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
+    parser.add_argument('--update-teacher-tta', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
 
     # optim.
     parser.add_argument('--batch-size', type=int, default=512, help='total batch size')

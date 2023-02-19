@@ -285,7 +285,11 @@ class SlotCon(nn.Module):
         """
         Momentum update of the key encoder
         """
-        momentum = 1. - (1. - self.teacher_momentum) * (math.cos(math.pi * self.k / self.K) + 1.) * 0.5
+        if self.args.update_teacher_tta and self.args.do_tta:
+            momentum = self.teacher_momentum
+        else:
+            momentum = 1. - (1. - self.teacher_momentum) * (math.cos(math.pi * self.k / self.K) + 1.) * 0.5
+        # momentum will range between 0.99 (self.teacher_momentum) to 1
         self.k += 1
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
@@ -497,8 +501,8 @@ class SlotCon(nn.Module):
                 # num_correct_q1 = torch.sum(pred_idx_q1==class_labels_merged).float()
                 acc_q1 = num_correct_q1/total_num
                 
-                vis_dict['q1_fc'] = enc_q['fc']
-                vis_dict['k1_fc'] = enc_k['fc']
+                # vis_dict['q1_fc'] = enc_q['fc']
+                # vis_dict['k1_fc'] = enc_k['fc']
                 vis_dict['q1_classification_acc'] = acc_q1
                 # num_correct_k1 = torch.sum(pred_idx_k1==class_labels_merged).float()
 
@@ -541,13 +545,14 @@ class SlotCon(nn.Module):
 
             # st()
             enc_q_0, enc_q_1 = (self.encoder_q(crops[0]),self.encoder_q(crops[1]))
+            
             if self.ready_classifier:
                 x1, x2 = self.projector_q(enc_q_0['layer4']), self.projector_q(enc_q_1['layer4'])
             else:
                 x1, x2 = self.projector_q(enc_q_0), self.projector_q(enc_q_1)
             
             with torch.no_grad():  # no gradient to keys
-                if not (self.args.do_tta or self.args.fine_tune):
+                if not (self.args.do_tta or self.args.fine_tune) or self.args.update_teacher_tta:
                     self._momentum_update_key_encoder()  # update the key encoder
                 
                 enc_k_0,enc_k_1 = (self.encoder_k(crops[0]),self.encoder_k(crops[1]))
@@ -578,7 +583,7 @@ class SlotCon(nn.Module):
             cont_loss = self.group_loss_weight * self.self_distill(q1_aligned.permute(0, 2, 3, 1).flatten(0, 2), k2_aligned.permute(0, 2, 3, 1).flatten(0, 2)) \
                 + self.group_loss_weight * self.self_distill(q2_aligned.permute(0, 2, 3, 1).flatten(0, 2), k1_aligned.permute(0, 2, 3, 1).flatten(0, 2))
             
-            if not (self.args.do_tta or self.args.fine_tune):
+            if not (self.args.do_tta or self.args.fine_tune) or self.args.update_center_tta:
                 self.update_center(torch.cat([score_k1, score_k2]).permute(0, 2, 3, 1).flatten(0, 2))
 
 

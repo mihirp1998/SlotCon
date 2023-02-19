@@ -3,13 +3,13 @@
 set -e
 set -x
 
-data_dir="/projects/katefgroup/datasets/ImageNet/"
 data_dir='/projects/katefgroup/datasets/ObjectNet/objectnet-1.0/'
-output_dir="./output/tta_imagenet_classify_73_pret_ssl_finetune5_banana"
+data_dir="/projects/katefgroup/datasets/ImageNet/"
+output_dir="./output/tta_pret_ssl_finetune"
 
 CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     main_pretrain.py \
-    --dataset imagenetbanana \
+    --dataset imagenet_corrupt_mod-gaussian_noise-5 \
     --data-dir ${data_dir} \
     --output-dir ${output_dir} \
     \
