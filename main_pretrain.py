@@ -18,7 +18,9 @@ import torch.backends.cudnn as cudnn
 from data.datasets import ImageFolder, ImageNet, COCOPanopticNewBaselineDatasetMapper
 from data.transforms import CustomDataAugmentation
 from data.transforms import TestTransform
-
+from mask2former import add_maskformer2_config
+from detectron2.projects.deeplab import add_deeplab_config
+from detectron2.config import get_cfg
 from models import resnet
 from models.slotcon import SlotCon
 from utils.lars import LARS
@@ -42,6 +44,7 @@ def get_parser():
     parser.add_argument('--test-annot-dir', type=str, default='/projects/katefgroup/datasets/coco/annotations/mod_100_semantic_val2017', help='dataset director')
     parser.add_argument('--image-size', type=int, default=224, help='image crop size')
     parser.add_argument('--min-scale', type=float, default=0.08, help='minimum crop scale')
+
    
     # model
     parser.add_argument('--arch', type=str, default='resnet50', choices=model_names, help='backbone architecture')
@@ -75,7 +78,9 @@ def get_parser():
     parser.add_argument('--no-scheduler', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
     parser.add_argument('--max-pool-classifier', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
     parser.add_argument('--no-strict', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
-    parser.add_argument('--fine-tune', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')            
+    parser.add_argument('--fine-tune', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
+    parser.add_argument('--do-ssl', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
+    parser.add_argument('--test-only', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
     
     
     # misc
@@ -99,6 +104,7 @@ def get_parser():
     parser.add_argument('--no-load-optim', action='store_true', help='auto resume from current.pth')    
     parser.add_argument('--no-aug', action='store_true', help='auto resume from current.pth')        
     parser.add_argument('--custom-lr', action='store_true', help='auto resume from current.pth')        
+  
 
     args = parser.parse_args()
     if os.environ["LOCAL_RANK"] is not None:
@@ -275,6 +281,17 @@ def trivial_batch_collator(batch):
     """
     return batch
 
+def setup_cfg(config_file,opts):
+    # load config from file and command-line arguments
+    cfg = get_cfg()
+    add_deeplab_config(cfg)
+    add_maskformer2_config(cfg)
+    cfg.merge_from_file(config_file)
+    cfg.merge_from_list(opts)
+    cfg.freeze()
+    return cfg
+
+
 def main(args):
 
     if args.seed is not None:
@@ -282,17 +299,13 @@ def main(args):
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
-    # if args.arch == 'resnet50':
-    #     mask_size = 7
-    #     mask_size = 28
-    # elif args.arch == 'resnet50_l2' or args.arch == 'resnet50_maskformer':
-    #     mask_size = 56        
-    # elif args.arch == 'resnet50_l' or args.arch == 'resnet50_pretrained':
-    #     mask_size = 28       
-    # elif args.arch == 'resnet50_pretrained_classification':
-    #     mask_size = 7        
-    # else:
-    #     raise NotImplementedError
+
+    opts = ['MODEL.WEIGHTS', 'model_final_94dc52.pkl']
+    # opts = []
+    config_file = '../mask2former_baseline/Mask2Former/configs/coco//panoptic-segmentation/maskformer2_R50_bs16_50ep.yaml'
+    cfg = setup_cfg(config_file,opts)
+    args.cfg = cfg
+
     mask_size = args.image_size 
     # prepare data
     import socket
@@ -304,7 +317,7 @@ def main(args):
     transform = CustomDataAugmentation(args.image_size, args.min_scale, mask_size, args.no_aug)
     if "coco_det" in args.dataset.lower():
         train_dataset = COCOPanopticNewBaselineDatasetMapper(transform, args = args)
-        test_dataset = COCOPanopticNewBaselineDatasetMapper(transform, args = args)
+        test_dataset = COCOPanopticNewBaselineDatasetMapper(transform, args = args, is_train=False)
     elif "imagenet" in args.dataset.lower():
         train_dataset = ImageNet(args.dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)        
         test_dataset = ImageNet(args.test_dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)
@@ -356,13 +369,22 @@ def main(args):
         load_checkpoint(args, model, optimizer, scheduler, scaler)
         model.module.global_steps = (args.start_epoch-1) * len(train_loader)
 
-    for epoch in range(args.start_epoch, args.epochs + 1):
-        train_sampler.set_epoch(epoch)
-        # train for one epoch
-        train(train_loader, test_loader, model, optimizer, scaler, scheduler, epoch, args)
 
-        if dist.get_rank() == 0 and (epoch % args.save_freq == 0 or epoch == args.epochs):
-            save_checkpoint(args, epoch, model, optimizer, scheduler, scaler)
+    # st()
+
+
+
+    if args.test_only:
+        test(test_loader, model,  args,  scaler)
+        # st()
+    else:
+        for epoch in range(args.start_epoch, args.epochs + 1):
+            train_sampler.set_epoch(epoch)
+            # train for one epoch
+            train(train_loader, test_loader, model, optimizer, scaler, scheduler, epoch, args)
+
+            if dist.get_rank() == 0 and (epoch % args.save_freq == 0 or epoch == args.epochs):
+                save_checkpoint(args, epoch, model, optimizer, scheduler, scaler)
 
 def test(test_loader, model, args,scaler):
     model.eval()
@@ -373,24 +395,24 @@ def test(test_loader, model, args,scaler):
     # st()
     with torch.no_grad():
         with torch.cuda.amp.autocast(scaler is not None):
-            for i, batch in enumerate(test_loader):
-                image_norm, mask_norm,  crops, coords, flags, masks = batch
-                image_norm = image_norm.cuda(non_blocking=True)
-                mask_norm = mask_norm.cuda(non_blocking=True)                
-                vis_dict = model((image_norm, mask_norm), is_test=True)
+            for i, batch in enumerate(test_loader):  
                 # st()
-                k1_acc.append(vis_dict['k1_classification_acc'])
-                q1_acc.append(vis_dict['q1_classification_acc'])
+                vis_dict = model(batch, is_test=True)
+                # k1_acc.append(vis_dict['k1_classification_acc'])
+                # q1_acc.append(vis_dict['q1_classification_acc'])
 
                 
-                if i ==num_val:
-                    break
+                # if i ==num_val:
+                #     break
                 # if i ==num_val:
                 #     vis_dict['k1_acc_avg'] = torch.mean(torch.tensor(k1_acc))
                 #     vis_dict['q1_acc_avg'] = torch.mean(torch.tensor(q1_acc))
+                print('Visualizing ', model.module.global_steps)
                 
                 if not args.d and dist.get_rank() == 0:
                     wandb.log(vis_dict,step=model.module.global_steps)
+    st()
+    print('done')
 
 
 
@@ -413,6 +435,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
 
     # model.global_step = (epoch-1) * len(train_loader)
 
+ 
     train_len = len(train_loader)
     for i, batch in enumerate(train_loader):
         # print(scheduler.after_scheduler.T_max)
@@ -451,7 +474,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             model.module.projector_k.eval()
             model.module.predictor_slot.eval()
 
-
+        # st()
         # compute output and loss
         with torch.cuda.amp.autocast(scaler is not None):
             loss, vis_dict = model(batch)
@@ -552,9 +575,9 @@ if __name__ == '__main__':
         logger.info("Full config saved to {}".format(path))
         if not args.d:
             if run_name is not '':
-                wandb.init(project='slot_con_3', entity="mihirp",id= run_name)
+                wandb.init(project='slot_con_4', entity="mihirp",id= run_name)
             else:
-                wandb.init(project='slot_con_3', entity="mihirp")
+                wandb.init(project='slot_con_4', entity="mihirp")
     # print args
     logger.info(
         "\n".join("%s: %s" % (k, str(v))

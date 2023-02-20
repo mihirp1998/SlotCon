@@ -4,3 +4,4 @@ wandb/
 *.pth
 *.png
 *.p
+model_final_94dc52.pkl

@@ -240,7 +240,7 @@ class CustomDataAugmentation(object):
         ])
         normalize = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+            # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
 
         self.no_aug = no_aug
@@ -277,7 +277,7 @@ class CustomDataAugmentation(object):
         self.normalize_image = transforms.Compose([
             transforms.ToTensor(),
             transforms.Resize(size=(size,size)),
-            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+            # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
         self.normalize_mask = transforms.Compose([
             # transforms.ToTensor(),
@@ -297,12 +297,12 @@ class CustomDataAugmentation(object):
         # st()
         # crops_transformed.append(self.global_transfo(crops[0]))
         # crops_transformed.append(self.global_transfo(crops[1]))        
-        crops_transformed.append(self.global_transfo1(crops[0]))
-        crops_transformed.append(self.global_transfo2(crops[1]))
+        crops_transformed.append((self.global_transfo1(crops[0])*255).to(torch.uint8))
+        crops_transformed.append((self.global_transfo2(crops[1])*255).to(torch.uint8))
 
         # st()
         image_norm, _, mask_norm = self.test_two_crop(image, mask)
-        image_norm = self.test_global_transfo(image_norm[0])
+        image_norm = (self.test_global_transfo(image_norm[0]) *255).to(torch.uint8)
         mask_norm = mask_norm[0]
         # print(image_norm[0].shape)
         # print((np.array(image_norm[0]) == np.array(image_norm[1])).all())

@@ -10,7 +10,7 @@ from panopticapi.utils import rgb2id
 from detectron2.data.datasets.builtin_meta import COCO_CATEGORIES
 import yaml, json
 from detectron2.data import detection_utils as utils
-
+from detectron2.data import transforms as T
 
 import ipdb
 st = ipdb.set_trace
@@ -19,10 +19,46 @@ from PIL import Image
 from torch.utils.data import Dataset
 import pickle
 import copy
-
+from detectron2.data import MetadataCatalog
 from detectron2.structures import BitMasks, Boxes, Instances
 from detectron2.data.build import get_detection_dataset_dicts
 from panopticapi.utils import rgb2id
+from detectron2.data import transforms as T
+
+
+def build_transform_gen(cfg, is_train):
+    """
+    Create a list of default :class:`Augmentation` from config.
+    Now it includes resizing and flipping.
+    Returns:
+        list[Augmentation]
+    """
+    assert is_train, "Only support training augmentation"
+    image_size = cfg.INPUT.IMAGE_SIZE
+    min_scale = cfg.INPUT.MIN_SCALE
+    max_scale = cfg.INPUT.MAX_SCALE
+
+    augmentation = []
+    
+    # st()
+
+    if cfg.INPUT.RANDOM_FLIP != "none":
+        augmentation.append(
+            T.RandomFlip(
+                horizontal=cfg.INPUT.RANDOM_FLIP == "horizontal",
+                vertical=cfg.INPUT.RANDOM_FLIP == "vertical",
+            )
+        )
+
+    augmentation.extend([
+        T.ResizeScale(
+            min_scale=min_scale, max_scale=max_scale, target_height=image_size, target_width=image_size
+        ),
+        T.FixedSizeCrop(crop_size=(image_size, image_size)),
+    ])
+
+    return augmentation
+
 
 
 class COCOPanopticNewBaselineDatasetMapper:
@@ -59,9 +95,15 @@ class COCOPanopticNewBaselineDatasetMapper:
         self.img_format = 'RGB'
         self.is_train = is_train
         self.args = args
+        # st()
+        if is_train:
+            self.tfm_gens = build_transform_gen(args.cfg, is_train)
         self.transform = transform_gen
+        coco_dataset = 'coco_2017_train_panoptic'
+        coco_dataset = 'coco_2017_val_panoptic'        
+        self.coco_metadata = MetadataCatalog.get(coco_dataset)
         self.dataset_dicts = get_detection_dataset_dicts(
-                ('coco_2017_train_panoptic',),
+                (coco_dataset,),
                 filter_empty=True,
                 min_keypoints=0,
                 proposal_files=None,
@@ -78,89 +120,74 @@ class COCOPanopticNewBaselineDatasetMapper:
         Returns:
             dict: a format that builtin models in detectron2 accept
         """
-
-        # st()
-
+        do_og_aug = False
         dataset_dict = self.dataset_dicts[idx]
         dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
+        # st()
         image = utils.read_image(dataset_dict["file_name"], format=self.img_format)
         utils.check_image_size(dataset_dict, image)
 
-        # image, transforms = T.apply_transform_gens(self.tfm_gens, image)
-        image_shape = image.shape[:2]  # h, w
-
-        # Pytorch's dataloader is efficient on torch.Tensor due to shared-memory,
-        # but not efficient on large generic data structures due to the use of pickle & mp.Queue.
-        # Therefore it's important to use torch.Tensor.
-        image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
-
-        if not self.is_train:
-            # USER: Modify this if you want to keep them for some reason.
-            dataset_dict.pop("annotations", None)
-            return dataset_dict
-
-        if "pan_seg_file_name" in dataset_dict:
-            pan_seg_gt = utils.read_image(dataset_dict.pop("pan_seg_file_name"), "RGB")
-            segments_info = dataset_dict["segments_info"]
-
-            # apply the same transformation to panoptic segmentation
-            # pan_seg_gt = transforms.apply_segmentation(pan_seg_gt)
-
-
-
-            pan_seg_gt = rgb2id(pan_seg_gt)
-
-            
-            classes = []
-            masks = []
-
-            # st()
-
-            for segment_info in segments_info:
-                class_id = segment_info["category_id"]
-                if not segment_info["iscrowd"]:
-                    classes.append(class_id)
-                    masks.append(pan_seg_gt == segment_info["id"])
-
-            classes = np.array(classes)
-            gt_classes = torch.tensor(classes, dtype=torch.int64)
-            if len(masks) == 0:
-                # Some image does not have annotation (all ignored)
-                gt_masks = torch.zeros((0, pan_seg_gt.shape[-2], pan_seg_gt.shape[-1]))
-                gt_boxes = Boxes(torch.zeros((0, 4)))
-            else:
-                masks = BitMasks(
-                    torch.stack([torch.from_numpy(np.ascontiguousarray(x.copy())) for x in masks])
-                )
-                gt_masks = masks.tensor
-                gt_boxes = masks.get_bounding_boxes()
-
-            # dataset_dict["instances"] = instances
-
-        image_pil = Image.fromarray(image.permute(1,2,0).numpy().astype(np.uint8))
-        gt_masks = gt_masks.float()
-
-        return_val = self.transform(image_pil, gt_masks) 
-
-        image_norm, mask_norm,  crops, coords, flags, masks = return_val
-        num_masks = mask_norm.shape[0]
-        # st()
-        masks_norm_padded= F.pad(mask_norm, (0, 0, 0, 0, 0, 256 - num_masks), value=0)
-        masks_padded= [F.pad(mask, (0, 0, 0, 0, 0, 256 - num_masks), value=0) for mask in masks]
-        all_instances = []
-        for mask in masks:
-            instances = Instances(image_shape)
-            instances.gt_masks = mask
-            # instances.gt_boxes = is.get_bounding_boxes()
-            instances.gt_classes = gt_classes
-            all_instances.append(instances)
+        if do_og_aug:
+            image, transforms = T.apply_transform_gens(self.tfm_gens, image)
         
-        dataset_dict['instances'] = all_instances
-        dataset_dict["image"] = crops
-        dataset_dict["flags"] = flags
-        dataset_dict["coords"] = coords
+        image_shape = image.shape[:2]  # h, w
+        image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
+        pan_seg_gt = utils.read_image(dataset_dict.pop("pan_seg_file_name"), "RGB")
+        segments_info = dataset_dict["segments_info"]
+
+        if do_og_aug:
+            pan_seg_gt = transforms.apply_segmentation(pan_seg_gt)
+
+        pan_seg_gt = rgb2id(pan_seg_gt)
+        classes = []
+        masks = []
+        for segment_info in segments_info:
+            class_id = segment_info["category_id"]
+            if not segment_info["iscrowd"]:
+                classes.append(class_id)
+                masks.append(pan_seg_gt == segment_info["id"])
+        classes = np.array(classes)
+        gt_classes = torch.tensor(classes, dtype=torch.int64)
+        if len(masks) == 0:
+            gt_masks = torch.zeros((0, pan_seg_gt.shape[-2], pan_seg_gt.shape[-1]))
+            gt_boxes = Boxes(torch.zeros((0, 4)))
+        else:
+            masks = BitMasks(
+                torch.stack([torch.from_numpy(np.ascontiguousarray(x.copy())) for x in masks])
+            )
+            gt_masks = masks.tensor
+            gt_boxes = masks.get_bounding_boxes()
 
         # st()
+        if not self.is_train:
+            dataset_dict['instances'] = Instances(image_shape)
+            dataset_dict['instances'].gt_masks = gt_masks
+            dataset_dict['instances'].gt_boxes = gt_boxes
+            dataset_dict['instances'].gt_classes = gt_classes
+            dataset_dict["image"] = image
+        else:
+            image_pil = Image.fromarray(image.permute(1,2,0).numpy().astype(np.uint8))
+            gt_masks = gt_masks.float()
+
+            return_val = self.transform(image_pil, gt_masks) 
+
+            image_norm, mask_norm,  crops, coords, flags, masks = return_val
+            num_masks = mask_norm.shape[0]
+            masks_norm_padded= F.pad(mask_norm, (0, 0, 0, 0, 0, 256 - num_masks), value=0)
+            masks_padded= [F.pad(mask, (0, 0, 0, 0, 0, 256 - num_masks), value=0) for mask in masks]            
+            all_instances = []
+            for mask in masks:
+                instances = Instances(image_shape)
+                instances.gt_masks = mask
+                # instances.gt_boxes = is.get_bounding_boxes()
+                instances.gt_classes = gt_classes
+                all_instances.append(instances)
+            
+            dataset_dict['instances'] = all_instances
+            dataset_dict["image"] = crops
+            dataset_dict["flags"] = flags
+            dataset_dict["coords"] = coords
+        dataset_dict["metadata"] = self.coco_metadata
         return dataset_dict
 
 
