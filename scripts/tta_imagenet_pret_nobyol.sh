@@ -10,12 +10,10 @@ data_dir="/projects/katefgroup/datasets/ImageNet/"
 output_dir="./output/tta_imagenet_val_10_1step_highler"
 output_dir="./output/tta_imagenet_corrupt_motion_blur_5_lowlr_5step_2"
 output_dir="./output/tta_imagenet_corrupt_snow_5_lowlr_5step_2"
-output_dir="./output/tta_imagenet_val_vis_2"
-output_dir="./output/tta_gauss_21_logit_center_hardaug"
+output_dir="./output/tta_imagenet_corrupt_gaussian_noise_11"
 # imagenet_corrupt-snow-5
-# imagenet_corrupt-gaussian_noise-5
 # imagenetval
-CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12351 --nproc_per_node=1 \
+CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12341 --nproc_per_node=1 \
     main_pretrain.py \
     --dataset imagenet_corrupt-gaussian_noise-5 \
     --data-dir ${data_dir} \
@@ -46,10 +44,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12351 --nproc_per_node=1 \
     --do-tta \
     --no-load-optim \
     --class-weight 0.0 \
-    --cont-weight 1.0  --do-only-classification --log-freq 15 --update-center-tta --center-loss
-    #  --merge-probs
-    # --d
-    #  --d
+    --cont-weight 1.0  --do-only-classification --log-freq 1 --no-byol --d
     #  --d
     # --d
 # --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth

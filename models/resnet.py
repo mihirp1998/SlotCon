@@ -7,6 +7,7 @@ import torch.nn as nn
 import torchvision.models as models
 import torch
 from torchvision.models.feature_extraction import create_feature_extractor
+from torchvision.models import resnet
 
 import numpy as np
 # from mask2former.modeling.pixel_decoder.fpn import build_pixel_decoder
@@ -124,9 +125,11 @@ class ResNetPretrainedClass(nn.Module):
 
     def __init__(self):
         super(ResNetPretrainedClass, self).__init__()
-        resnet = models.resnet50(pretrained=True)
+        # st()
+        resnet.model_urls["resnet50"] = "https://download.pytorch.org/models/resnet50-11ad3fa6.pth"
+        resnet_model = resnet.resnet50(pretrained=True)
         return_nodes = {"layer4.2.relu_2": "layer4",'fc': 'fc'}
-        self.model2 = create_feature_extractor(resnet, return_nodes=return_nodes)
+        self.model2 = create_feature_extractor(resnet_model, return_nodes=return_nodes)
 
         # modules_encoder = list(self.resnet.children())[:-2]
         # self.resnet_encoder = nn.Sequential(*modules_encoder)

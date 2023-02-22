@@ -19,9 +19,9 @@ torch.manual_seed(0)
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 
-from data.datasets import ImageFolder, ImageNet
-from data.transforms import CustomDataAugmentation
-from data.transforms import TestTransform
+from data.datasets import ImageNet
+from data.transforms import ClassificationPresetTrain,ClassificationPresetEval
+
 
 from models import resnet
 from models.slotcon import SlotCon
@@ -60,6 +60,7 @@ def get_parser():
     
     parser.add_argument('--update-center-tta', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
     parser.add_argument('--update-teacher-tta', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
+    parser.add_argument('--center-loss', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
 
     # optim.
     parser.add_argument('--batch-size', type=int, default=512, help='total batch size')
@@ -87,6 +88,8 @@ def get_parser():
     parser.add_argument('--only-test', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
     parser.add_argument('--do-5k', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
     parser.add_argument('--do-10', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')            
+    parser.add_argument('--no-byol', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')                
+    parser.add_argument('--merge-probs', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')                    
     
     # misc
     parser.add_argument('--annot-dir', type=str, default='/projects/katefgroup/datasets/coco/annotations/mod_semantic_train2017/', help='output director')
@@ -114,6 +117,56 @@ def get_parser():
     if os.environ["LOCAL_RANK"] is not None:
         args.local_rank = int(os.environ["LOCAL_RANK"])
     return args 
+
+def get_optimizer(args, model):
+    if args.adam:
+        trainable_params = []
+        for name, param in model.named_parameters():
+            if "encoder_q" in name:
+                param.requires_grad = True
+                trainable_params.append(param)
+            else:
+                param.requires_grad = False
+        all_names = []
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                all_names.append(name)            
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.base_lr,
+            weight_decay=args.weight_decay)    
+        # st()        
+    else:
+        if args.optimizer == 'sgd':
+            optimizer = torch.optim.SGD(
+                model.parameters(),
+                lr=args.batch_size * args.world_size / 256 * args.base_lr,
+                momentum=args.momentum,
+                weight_decay=args.weight_decay)
+        elif args.optimizer == 'lars':
+            # st()
+            # trainable_params = []
+            # for name, param in model.named_parameters():
+            #     if "bn" in name and "encoder_q" in name:
+            #         param.requires_grad = True
+            #         trainable_params.append(param)
+            #     else:
+            #         param.requires_grad = False
+            # all_names = []
+            # for name, param in model.named_parameters():
+            #     if param.requires_grad:
+            #         all_names.append(name)
+
+            # print("all_names", all_names)
+            # st() model.parameters()
+
+            optimizer = LARS(
+                model.parameters(),
+                lr=args.batch_size * args.world_size / 256 * args.base_lr,
+                momentum=args.momentum,
+                weight_decay=args.weight_decay)
+
+    return optimizer
 
 def build_model(args):
     encoder = resnet.__dict__[args.arch]
@@ -241,6 +294,9 @@ def save_checkpoint(args, epoch, model, optimizer, scheduler, scaler=None):
     shutil.copyfile(file_name, os.path.join(args.output_dir, 'current.pth'))
 
 def load_checkpoint(args, model, optimizer, scheduler, scaler=None):
+    # resnet50_weights = torch.load('/home/mprabhud/.cache/torch/hub/checkpoints/resnet50-11ad3fa6.pth')
+    # st()
+    # model.load_state_dict(checkpoint['model'])
     if os.path.isfile(args.resume):
         logger.info(f"=> loading checkpoint '{args.resume}'")
         checkpoint = torch.load(args.resume, map_location='cpu')
@@ -304,13 +360,13 @@ def main(args):
         if 'grogu' in hostname:
             args.data_dir = '/grogu/datasets/imagenet'
     # st()
-    transform = CustomDataAugmentation(args.image_size, args.min_scale, mask_size, args.no_aug)
-    if "imagenet" in args.dataset.lower():
-        train_dataset = ImageNet(args.dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)        
-        test_dataset = ImageNet(args.test_dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)
-    else:
-        train_dataset = ImageFolder(args.dataset, args.data_dir, transform,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes)
-        test_dataset = ImageFolder(args.test_dataset, args.data_dir, transform,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes)
+    transform = ClassificationPresetTrain(crop_size=176,auto_augment_policy='ta_wide')
+    key_transform = ClassificationPresetTrain(crop_size=224,auto_augment_policy=None,random_erase_prob=0.)    
+    eval_transform = ClassificationPresetEval(crop_size=224,resize_size=232)
+    # transform = CustomDataAugmentation(args.image_size, args.min_scale, mask_size, args.no_aug)
+
+    train_dataset = ImageNet(args.dataset, args.data_dir, transform, eval_transform, transform, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps, args=args)
+    test_dataset = ImageNet(args.test_dataset, args.data_dir, transform, eval_transform, transform, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps, args=args)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(
@@ -323,11 +379,6 @@ def main(args):
         test_dataset, batch_size=args.batch_size, shuffle=(test_sampler is None), 
         num_workers=args.num_workers, pin_memory=True, sampler=test_sampler, drop_last=True)
 
-    # st()
-
-
-    # st()
-
     args.num_instances = len(train_loader.dataset)
     logger.info(f"length of training dataset: {args.num_instances}")
 
@@ -335,7 +386,6 @@ def main(args):
     logger.info("=> creating model '{}'".format(args.arch))
     model, optimizer = build_model(args)
     logger.info(model)
-    # st()
     # define scheduler
     if args.no_scheduler:
         scheduler = None
@@ -360,7 +410,7 @@ def main(args):
         load_checkpoint(args, model, optimizer, scheduler, scaler)
         model.module.global_steps = (args.start_epoch-1) * len(train_loader)
 
-
+    
     if args.only_test:
         test(test_loader, model, args, scaler)
     else:
@@ -409,11 +459,11 @@ def test(test_loader, model, args,scaler):
         with torch.cuda.amp.autocast(scaler is not None):
             for i, batch in enumerate(test_loader):
                 print(i,"example")
-                image_norm, mask_norm,  crops, coords, flags, masks, class_labels, class_names, fpath = batch
+                image_norm, crops, class_labels, class_names, fpath = batch
                 image_norm = image_norm.cuda(non_blocking=True)
-                mask_norm = mask_norm.cuda(non_blocking=True)    
+                # mask_norm = mask_norm.cuda(non_blocking=True)    
                 # st()            
-                vis_dict = model((image_norm, mask_norm, class_labels, class_names), is_test=True)
+                vis_dict = model((image_norm, class_labels, class_names), is_test=True)
                 # st()
                 # k1_acc.append(vis_dict['k1_classification_acc'])
                 # q1_acc.append(vis_dict['q1_classification_acc'])
@@ -442,7 +492,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
     loss_meter = AverageMeter()
     # switch to train mode
     run_name = args.output_dir.split("/")[-1]
-
+    model.module.train()
     model.train()
     num_params = count_parameters(model)
     print(f"num_params {num_params}")
@@ -455,128 +505,100 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
     end_acc_k = []    
     end = time.time()
 
-    # model.global_step = (epoch-1) * len(train_loader)
-
     # st()
+    model.module.re_init()
+    model.cuda()
+    optimizer = get_optimizer(args,model)
+
+
     train_len = len(train_loader)
     for i, batch in enumerate(train_loader):
-        # print(scheduler.after_scheduler.T_max)
-        # print(f"num_iter {i}")
-        image_norm, mask_norm,  crops, coords, flags, masks, class_labels, class_str, fpath = batch
-        crops = [crop.cuda(non_blocking=True) for crop in crops]
-        coords = [coord.cuda(non_blocking=True) for coord in coords]
-        flags = [flag.cuda(non_blocking=True) for flag in flags]
-        masks = [mask.cuda(non_blocking=True) for mask in masks]
 
+        image_norm,  crops, class_labels, class_str, fpath = batch
+        crops = [crop.cuda(non_blocking=True) for crop in crops]
 
         image_norm = image_norm.cuda(non_blocking=True)
-        mask_norm = mask_norm.cuda(non_blocking=True)
         class_labels = class_labels.cuda(non_blocking=True)
 
-
+        
         if ((i%(args.tta_steps) == 0 or args.overfit) and args.do_tta):
-            # st()
+            model.module.eval()
             model.eval()
             with torch.no_grad():
-                with torch.cuda.amp.autocast(scaler is not None):
-                    print("start")
-                    vis_dict = model((image_norm, mask_norm, class_labels, class_str), is_test=True)
+                # with torch.cuda.amp.autocast(scaler is not None):
+                print("start")
+                vis_dict = model((image_norm, class_labels, class_str), is_test=True)
 
-                    if not args.do_only_classification:
-                        ari_q, ari_k = vis_dict['test_ari_score_q1'],vis_dict['test_ari_score_k1']
-                        start_acc_q.append(ari_q)
-                        start_acc_k.append(ari_k)
-                    else:
-                        class_acc_q, class_acc_k = vis_dict['q1_classification_acc'],vis_dict['k1_classification_acc']
-                        start_acc_q.append(class_acc_q)
-                        start_acc_k.append(class_acc_k)
-                    
-                    if not args.d and dist.get_rank() == 0:
-                        wandb.log(vis_dict,step=model.module.global_steps)
+                class_acc_q, class_acc_k = vis_dict['q1_classification_acc'],vis_dict['k1_classification_acc']
+                start_acc_q.append(class_acc_q)
+                start_acc_k.append(class_acc_k)
+                print("start",class_acc_q,class_acc_k)
+                
+                if not args.d and dist.get_rank() == 0:
+                    wandb.log(vis_dict,step=model.module.global_steps)
 
         model.train()
-        # st()
-        if args.fine_tune:
-            model.module.encoder_q.eval()
-            model.module.encoder_k.eval()
-            model.module.grouping_q.eval()
-            model.module.grouping_k.eval()
-            model.module.projector_q.eval()
-            model.module.projector_k.eval()
-            model.module.predictor_slot.eval()
+        model.module.train()        
 
-        try:
-            # compute output and loss
-            with torch.cuda.amp.autocast(scaler is not None):
-                loss, vis_dict = model((crops, coords, flags, masks, class_labels,class_str))
-            
-            optimizer.zero_grad()
-            if args.fp16:
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
-            if not args.do_tta and scheduler is not None:
-                scheduler.step()
-        except RecursionError:
-            print('RecursionError')
-            loss = 0.0
-            vis_dict = {}
-            # st()
+        # print('training')
+
+        loss, vis_dict = model((crops,class_labels,class_str))
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
         vis_dict['lr'] = optimizer.param_groups[0]['lr']
 
         if not args.d and dist.get_rank() == 0:
             wandb.log(vis_dict,step=model.module.global_steps)
-        # avg loss from batch size
-        # print(loss.item())
+
         loss_meter.update(loss.item(), crops[0].size(0))
-        # measure elapsed time
+
         batch_time.update(time.time() - end)
         end = time.time()
 
-        # # general testing
-        if not args.do_tta :
-            if (i+1)%(args.log_freq) == 0 or args.overfit:
-                test(test_loader, model, args, scaler)
-        #     st()
+
        
 
         if args.do_tta:
             if (i+1)%(args.tta_steps) == 0 and not args.overfit:
                 model.eval()
+                model.module.eval()
                 with torch.no_grad():
-                    with torch.cuda.amp.autocast(scaler is not None):
-                        # st()
-                        vis_dict = model((image_norm, mask_norm, class_labels, class_str), is_test=True)
+                    # with torch.cuda.amp.autocast(scaler is not None):
+                    vis_dict = model((image_norm, class_labels, class_str), is_test=True)
+                    vis_dict['cont_loss'] = float("nan")
 
-                        if not args.do_only_classification:
-                            acc_q, acc_k = vis_dict['test_ari_score_q1'],vis_dict['test_ari_score_k1']
-                        else:
-                            acc_q, acc_k = vis_dict['q1_classification_acc'],vis_dict['k1_classification_acc']
-                            # st()
 
-                        end_acc_q.append(acc_q)
-                        end_acc_k.append(acc_k)
-                        end_mean_q = torch.mean(torch.tensor(end_acc_q))
-                        start_mean_q = torch.mean(torch.tensor(start_acc_q))
+                    acc_q, acc_k = vis_dict['q1_classification_acc'],vis_dict['k1_classification_acc']
 
-                        end_mean_k = torch.mean(torch.tensor(end_acc_k))
-                        start_mean_k = torch.mean(torch.tensor(start_acc_k))
 
-                        model.module.set_means(start_mean_q, end_mean_q,start_mean_k, end_mean_k)
+                    end_acc_q.append(acc_q)
+                    end_acc_k.append(acc_k)
+                    end_mean_q = torch.mean(torch.tensor(end_acc_q))
+                    start_mean_q = torch.mean(torch.tensor(start_acc_q))
 
-                        print(f"Mean Scores: Start- {start_mean_k},{start_mean_q}; End- {end_mean_k},{end_mean_q}")
+                    end_mean_k = torch.mean(torch.tensor(end_acc_k))
+                    start_mean_k = torch.mean(torch.tensor(start_acc_k))
 
-                        if not args.d and dist.get_rank() == 0:
-                            wandb.log(vis_dict,step=model.module.global_steps)
+                    # model, optimizer = build_model(args)
+                    model.module.re_init()
+                    model.cuda()
+                    optimizer = get_optimizer(args,model)
+                    print('reinitializing')                    
 
-                        load_checkpoint(args, model, optimizer, scheduler, scaler)
+                    model.module.set_means(start_mean_q, end_mean_q,start_mean_k, end_mean_k)
 
-                        # st()                        
+
+                    print(f"Mean Scores: Start- {start_mean_k},{start_mean_q}; End- {end_mean_k},{end_mean_q}")
+
+                    if not args.d and dist.get_rank() == 0:
+                        wandb.log(vis_dict,step=model.module.global_steps)
+                        
+                        
+
+                        # load_checkpoint(args, model, optimizer, scheduler, scaler)
+                  
                         print("end")
 
         if i % args.print_freq == 0:
@@ -613,9 +635,9 @@ if __name__ == '__main__':
         logger.info("Full config saved to {}".format(path))
         if not args.d:
             if run_name is not '':
-                wandb.init(project='slot_con_4', entity="mihirp",id= run_name)
+                wandb.init(project='slot_con_5', entity="mihirp",id= run_name)
             else:
-                wandb.init(project='slot_con_4', entity="mihirp")
+                wandb.init(project='slot_con_5', entity="mihirp")
             wandb.config.update(args)
     # print args
     logger.info(

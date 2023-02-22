@@ -8,7 +8,7 @@ import torchvision
 import matplotlib.pyplot as plt
 import wandb
 import numpy as np
-
+import matplotlib.pyplot as plt
 from timm.models.vision_transformer import PatchEmbed, Block
 
 
@@ -152,6 +152,26 @@ class SemanticGrouping(nn.Module):
         slots = torch.einsum('bdhw,bkhw->bkd', x_prev, attn / attn.sum(dim=(2, 3), keepdim=True))
         return slots, dots
 
+def change_batchnorm_attr(model: torch.nn.Module):
+    # get children form model!
+    children = list(model.children())
+    flatt_children = []
+    if children == []:
+        if isinstance(model, torch.nn.SyncBatchNorm):
+            # model.eval()
+            model.track_running_stats = False
+            model.running_mean = None
+            model.running_var = None
+        # if model has no children; model is last child! :O
+        return model
+    else:
+       # look for children from children... to the last child!
+       for child in children:
+            try:
+                flatt_children.extend(change_batchnorm_attr(child))
+            except TypeError:
+                flatt_children.append(change_batchnorm_attr(child))
+    return flatt_children
 
 
 
@@ -167,118 +187,68 @@ class SlotCon(nn.Module):
         if args.arch == 'resnet50_pretrained_classification':
             self.ready_classifier = True
 
-        # st()
         self.unnormalize = UnNormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         self.global_steps = 0
 
         self.dim_hidden = args.dim_hidden
         self.dim_out = args.dim_out
         self.teacher_momentum = args.teacher_momentum
-
         self.num_channels = 512 if args.arch in ('resnet18', 'resnet34') else 2048
-
         self.start_acc_mean_q = 0.0
         self.end_acc_mean_q = 0.0        
         self.start_acc_mean_k = 0.0
         self.end_acc_mean_k = 0.0
-        # st()
-        if args.sl_layer:
-            self.encoder_q = encoder(head_type='second_last')
-            self.encoder_k = encoder(head_type='second_last')
+
+        self.encoder_name = encoder
+        self.class_loss = nn.CrossEntropyLoss()
+
+        self.encoder_q = encoder(head_type='early_return')
+
+        if self.args.no_byol:
+            self.encoder_k = self.encoder_q
+            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)            
         else:
-            self.encoder_q = encoder(head_type='early_return')
             self.encoder_k = encoder(head_type='early_return')
 
-        # st()
+            for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
+                param_k.data.copy_(param_q.data)  # initialize
+                param_k.requires_grad = False  # not update by gradient
 
+            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
+            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_k)
 
-        # st()
-        if args.do_only_classification:
-            if args.vit_probing:
-                classifier_embed_dim = 768
-                num_classes = 1000
-                self.classifier_cls_token = nn.Parameter(torch.randn(1, 1, self.num_channels), requires_grad=True)
-                self.classifier_embed = nn.Linear(self.num_channels, classifier_embed_dim, bias=True)
-                self.classifier_pos_embed = nn.Parameter(torch.randn(1, 50, classifier_embed_dim), requires_grad=True)  # fixed sin-cos embedding
-
-                dpr = [x.item() for x in torch.linspace(0, 0.0, 12)]
-                self.classifier_blocks = nn.ModuleList([
-                        Block(classifier_embed_dim, 8, 4, qkv_bias=True, norm_layer=nn.LayerNorm, drop_path=dpr[i])
-                    for i in range(12)])
-
-                self.classifier_norm = nn.LayerNorm(classifier_embed_dim)
-                self.classifier_pred = nn.Linear(classifier_embed_dim, num_classes)
-            elif self.ready_classifier:
-                pass
-            elif self.args.max_pool_classifier:
-                self.class_predict_k = nn.Sequential(nn.AdaptiveMaxPool2d((1,1)), nn.Flatten(), nn.Linear(2048, 1000))
-                self.class_predict_q = nn.Sequential(nn.AdaptiveMaxPool2d((1,1)), nn.Flatten(), nn.Linear(2048, 1000))
-                for param_q, param_k in zip(self.class_predict_q.parameters(), self.class_predict_k.parameters()):
-                    param_k.data.copy_(param_q.data)  # initialize
-                    param_k.requires_grad = False  # not update by gradient
-                # self.class_predict_q.eval()
-                # self.class_predict_k.eval()
-                nn.SyncBatchNorm.convert_sync_batchnorm(self.class_predict_q)
-                nn.SyncBatchNorm.convert_sync_batchnorm(self.class_predict_k)
-            else:
-                self.mha = nn.MultiheadAttention(1024, 1, batch_first=True)
-                self.key = nn.Linear(self.dim_out, 1024)
-                self.value = nn.Linear(self.dim_out, 1024)
-                self.query_embed = nn.Parameter(torch.randn(1, 1, 1024))
-                self.class_predict = nn.Sequential(nn.Linear(1024, 1024), nn.ReLU(), nn.Linear(1024, 1000))
-            self.class_loss = nn.CrossEntropyLoss()
-
-
-
-        if args.do_seg_class:
-            self.class_predict_q = nn.Sequential(nn.Linear(self.dim_out, 1024), nn.ReLU(), nn.Linear(1024, 134))
-            self.class_loss = nn.CrossEntropyLoss(ignore_index=-1)            
-
-
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-            param_k.data.copy_(param_q.data)  # initialize
-            param_k.requires_grad = False  # not update by gradient
-
-        nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
-        nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_k)
-        # self.encoder_k.eval()
-        # self.encoder_q.eval()
-
-        self.group_loss_weight = args.group_loss_weight
         self.student_temp = args.student_temp
         self.teacher_temp = args.teacher_temp
-            
-        self.projector_q = DINOHead2d(self.num_channels, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
-        self.projector_k = DINOHead2d(self.num_channels, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
-
-        for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
-            param_k.data.copy_(param_q.data)  # initialize
-            param_k.requires_grad = False  # not update by gradient
-            
-        nn.SyncBatchNorm.convert_sync_batchnorm(self.projector_q)
-        nn.SyncBatchNorm.convert_sync_batchnorm(self.projector_k)
-        # self.projector_k.eval()
-        # self.projector_q.eval()
 
         self.num_prototypes = args.num_prototypes
         self.center_momentum = args.center_momentum
         self.register_buffer("center", torch.zeros(1, self.num_prototypes))
-        self.grouping_q = SemanticGrouping(self.num_prototypes, self.dim_out, self.teacher_temp)
-        self.grouping_k = SemanticGrouping(self.num_prototypes, self.dim_out, self.teacher_temp)
-        self.predictor_slot = DINOHead(self.dim_out, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
+        self.all_centers = []
 
-        nn.SyncBatchNorm.convert_sync_batchnorm(self.predictor_slot)
-        # self.predictor_slot.eval()
-            
-        for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
-            param_k.data.copy_(param_q.data)  # initialize
-            param_k.requires_grad = False  # not update by gradient
 
         self.K = int(args.num_instances * 1. / args.world_size / args.batch_size * args.epochs)
         self.k = int(args.num_instances * 1. / args.world_size / args.batch_size * (args.start_epoch - 1))
 
-    def re_init(self, args):
-        self.k = int(args.num_instances * 1. / args.world_size / args.batch_size * (args.start_epoch - 1))
+    def re_init(self):
+        # st()
+        if self.args.no_byol:
+            self.encoder_q = self.encoder_name(head_type='early_return')
+            self.encoder_k = self.encoder_q
+        else:
+            self.encoder_q = self.encoder_name(head_type='early_return')
+            self.encoder_k = self.encoder_name(head_type='early_return') 
+            for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
+                param_k.data.copy_(param_q.data)  # initialize
+                param_k.requires_grad = False  # not update by gradient
+            self.center = torch.zeros_like(self.center)
+            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
+            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_k)
+        # print('hello')
+        # change_batchnorm_attr(self.encoder_k)
+        # st()
+        # print('hello')
+        # self.encoder_k.eval()               
+        # self.k = int(args.num_instances * 1. / args.world_size / args.batch_size * (args.start_epoch - 1))
 
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
@@ -293,14 +263,13 @@ class SlotCon(nn.Module):
         self.k += 1
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
-        for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
-            param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
-        for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
-            param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)  
-
-        if self.args.max_pool_classifier:
-            for param_q, param_k in zip(self.class_predict_q.parameters(), self.class_predict_k.parameters()):
-                param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
+        # for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
+        #     param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
+        # for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
+        #     param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)  
+        # if self.args.max_pool_classifier:
+        #     for param_q, param_k in zip(self.class_predict_q.parameters(), self.class_predict_k.parameters()):
+        #         param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
 
 
 
@@ -322,8 +291,14 @@ class SlotCon(nn.Module):
 
     def self_distill(self, q, k):
         q = F.log_softmax(q / self.student_temp, dim=-1)
-        k = F.softmax((k - self.center) / self.teacher_temp, dim=-1)
+        k = F.softmax(k / self.teacher_temp, dim=-1)
         return torch.sum(-k * q, dim=-1).mean()
+
+    def self_distill_probs(self, q, k):
+        q = F.log_softmax(q / self.student_temp, dim=-1)
+        # k = F.softmax(k / self.teacher_temp, dim=-1)
+        return torch.sum(-k * q, dim=-1).mean()
+
 
     def set_means(self, start_acc_q, end_acc_q, start_acc_k, end_acc_k):
         # st()
@@ -351,59 +326,55 @@ class SlotCon(nn.Module):
         return F.cross_entropy(logits, labels) * (2 * tau)
 
 
-    def semantic_inference(self, mask_cls, mask_pred):
-        st()
      
 
+    def visualize_plot(self,qs_aligned,ks_aligned,centers,class_label,ignore_center=False):
 
+        score_aligned_q_probs = F.softmax(qs_aligned / self.student_temp, dim=-1).mean(0).clone().cpu().detach().numpy()
+        score_aligned_q_pred_class = np.argmax(score_aligned_q_probs)
+        plt.bar(np.arange(1000),score_aligned_q_probs)
+        plt.title(f"predictied class; {score_aligned_q_pred_class},  gt class: {class_label}")
+        plt.savefig(f"dump_plot_qs.png")
+        plt.clf()
+        plt.close()
+
+        score_aligned_k_probs = F.softmax((ks_aligned) / self.teacher_temp, dim=-1).mean(0).clone().cpu().detach().numpy()
+        score_aligned_k_pred_class = np.argmax(score_aligned_k_probs)
+        plt.bar(np.arange(1000),score_aligned_k_probs)
+        plt.title(f"predictied class; {score_aligned_k_pred_class},  gt class: {class_label}")
+        plt.savefig(f"dump_plot_ks.png")
+        plt.clf()
+        plt.close()
+
+        if not ignore_center:
+            score_aligned_center_probs = F.softmax((centers) / self.teacher_temp, dim=-1).mean(0).clone().cpu().detach().numpy()
+            score_aligned_center_pred_class = np.argmax(score_aligned_center_probs)
+            plt.bar(np.arange(1000),score_aligned_center_probs)
+            plt.title(f"predictied class; {score_aligned_center_pred_class},  gt class: {class_label}")
+            plt.savefig(f"dump_plot_centers.png")
+            plt.clf()
+            plt.close()
+
+
+        # st()
+        
 
     def forward(self, input, is_test=False):
         if is_test:
             vis_dict = {}
-            image,masks_1,class_labels,class_str = input
-            image_vis = self.unnormalize(image)
-            
-            vis_dict['test_class_name'] = wandb.Html(class_str[0])
-            # print(self.predictor_slot.mlp[1].running_mean.sum())
-            # print(list(self.encoder_k.model2.layer1.modules())[1].bn3.running_mean.sum())
-            # print(self.encoder_k.model2.bn1.running_mean.sum())
             # st()
+            image,class_labels,class_str = input
+            image_vis = self.unnormalize(image)
+            # print(class_str)
+            if isinstance(class_str,str):
+                vis_dict['test_class_name'] = wandb.Html(class_str[0])
+            else:
+                vis_dict['test_class_name'] = wandb.Html(class_str[0])
 
             image_vis_img_1 = wandb.Image(image_vis[:1], caption="input_image")
             vis_dict['test_input_image_1'] = image_vis_img_1
-            enc_q,enc_k = (self.encoder_q(image),self.encoder_k(image))
-            # return enc_q['fc']
-            # st()
-            # print(enc_k['fc'].sum(-1), image.sum([1,2,3]))
-            # st()
-            if self.ready_classifier:
-                x1, y1 = self.projector_q(enc_q['layer4']), self.projector_k(enc_k['layer4'])
-            else:
-                x1= self.projector_q(enc_q)
-                y1 = self.projector_k(enc_k)
-            (q1, score_q1)= self.grouping_q(x1)
-            (k1, score_k1)= self.grouping_k(y1)        
-            # st()    
-            mask_vis_q1 = summ_instance_masks(score_q1[0],image_vis[0],pred=True)
-            mask_vis_k1 = summ_instance_masks(score_k1[0],image_vis[0],pred=True)
-            mask_vis_q1_img = wandb.Image(mask_vis_q1, caption="pred_mask_new")
-            vis_dict['test_pred_mask_new_q1'] = mask_vis_q1_img
-            mask_vis_k1_img = wandb.Image(mask_vis_k1, caption="pred_mask_new")
-            vis_dict['test_pred_mask_new_k1'] = mask_vis_k1_img
-            
-            score_q1_ = score_q1.flatten(2,3)
-            score_k1_ = score_k1.flatten(2,3)
-            # st()
-            if not self.args.do_only_classification:
-                mask_vis_1 = summ_instance_masks(masks_1[0],image_vis[0],pred=False)
-                mask_vis_1_img = wandb.Image(mask_vis_1, caption="gt_mask_new_1")
-                vis_dict['test_gt_mask_new_1'] = mask_vis_1_img     
-                masks_1_ = masks_1.flatten(2,3)
-                ari_score_q1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_q1_.permute(0,2,1).cpu()).mean()
-                ari_score_k1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_k1_.permute(0,2,1).cpu()).mean()
 
-                vis_dict['test_ari_score_q1'] = ari_score_q1     
-                vis_dict['test_ari_score_k1'] = ari_score_k1
+            enc_q,enc_k = (self.encoder_q(image),self.encoder_k(image))
 
 
             if self.args.do_tta:
@@ -411,123 +382,58 @@ class SlotCon(nn.Module):
                 vis_dict['end_acc_mean_q'] = self.end_acc_mean_q            
                 vis_dict['start_acc_mean_k'] = self.start_acc_mean_k
                 vis_dict['end_acc_mean_k'] = self.end_acc_mean_k  
+
+
+            # B,_,_ = q1.shape
+
+            class_labels_merged = class_labels
+            total_num = torch.tensor(class_labels_merged.shape[0]).float()
+
+            pred_class_q1,pred_class_k1 = (enc_q['fc'],enc_k['fc'])
+
+            pred_idx_q1 = torch.argmax(pred_class_q1.squeeze(1),dim=-1)
+            pred_idx_k1 = torch.argmax(pred_class_k1.squeeze(1),dim=-1)
             # st()
+            if len(class_labels_merged.shape) ==1:
+                pred_idx_q1_ = pred_idx_q1
+                pred_idx_k1_ = pred_idx_k1
+                similarity_q1 = pred_idx_q1_==class_labels_merged
+                similarity_k1 = pred_idx_k1_==class_labels_merged
+                vis_dict['k1_classification_acc_unnorm'] = similarity_k1
+                vis_dict['q1_classification_acc_unnorm'] = similarity_q1                    
+            else:
+                pred_idx_q1_ = pred_idx_q1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
+                pred_idx_k1_ = pred_idx_k1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
+                similarity_q1 = pred_idx_q1_==class_labels_merged
+                similarity_k1 = pred_idx_k1_==class_labels_merged
+                similarity_k1 =similarity_k1.sum(-1).bool()
+                similarity_q1 = similarity_q1.sum(-1).bool()
+                vis_dict['k1_classification_acc_unnorm'] = similarity_k1
+                vis_dict['q1_classification_acc_unnorm'] = similarity_q1
 
-            if self.args.do_seg_class:
-                # st()
-                q1_pred_class = self.class_predict(q1)
-                k1_pred_class = self.class_predict(k1)
-                # q1_gt_labels = class_labels
-                # k1_gt_labels = class_labels
-                class_labels_valid = (class_labels != -1).float()
-                
-                q1_pred_idx = torch.argmax(q1_pred_class.squeeze(1),dim=-1)
-                q1_correct = (q1_pred_idx==class_labels).float()
-                q1_num_correct = torch.sum(class_labels_valid*q1_correct).float()
-                q1_total_num = torch.sum(class_labels_valid).float()
-                q1_acc = q1_num_correct/q1_total_num
-                vis_dict['q1_classification_acc'] = q1_acc
+            
+            num_correct_q1 = torch.sum(similarity_q1).float()
 
-                k1_pred_idx = torch.argmax(k1_pred_class.squeeze(1),dim=-1)
-                k1_correct = (k1_pred_idx==class_labels).float()
-                k1_num_correct = torch.sum(class_labels_valid*k1_correct).float()
-                k1_total_num = torch.sum(class_labels_valid).float()
-                k1_acc = k1_num_correct/k1_total_num
-                # st()
-                vis_dict['k1_classification_acc'] = k1_acc
+            acc_q1 = num_correct_q1/total_num
+            
+            vis_dict['q1_classification_acc'] = acc_q1
+            
+            num_correct_k1 = torch.sum(similarity_k1).float()
 
-                # st()
-            if self.args.do_only_classification:
-                B,_,_ = q1.shape
-                # qs = torch.cat([q1,q2],0)
-                class_labels_merged = class_labels
-                total_num = torch.tensor(class_labels_merged.shape[0]).float()
-                # st()
-                if self.ready_classifier:
-                    pred_class_q1,pred_class_k1 = (enc_q['fc'],enc_k['fc'])
-                elif  self.args.vit_probing:
-                    B_split = enc_q.shape[0]
-                    enc_qk = torch.cat([enc_q,enc_k],0)
-                    enc_qk_ = enc_qk.flatten(2,3).permute(0,2,1)
-                    classifier_cls_token_ = self.classifier_cls_token.repeat(enc_qk_.shape[0],1,1)
-                    enc_qk_cls = torch.cat([classifier_cls_token_,enc_qk_],1)
-                    enc_qk_cls = self.classifier_embed(enc_qk_cls)
-                    enc_qk_cls = enc_qk_cls + self.classifier_pos_embed
+            acc_k1 = num_correct_k1/total_num
 
-
-                    for blk in self.classifier_blocks:
-                        enc_qk_cls = blk(enc_qk_cls)
-
-                    enc_qk_cls = self.classifier_norm(enc_qk_cls)
-
-                    enc_cls = enc_qk_cls[:, :1, :]
-                    pred_class = self.classifier_pred(enc_cls)[:, 0]
-                    pred_class_q1 = pred_class[:B_split]
-                    pred_class_k1 = pred_class[B_split:]
-                elif self.args.max_pool_classifier:
-                    pred_class_q1 = self.class_predict_q(enc_q)
-                    pred_class_k1 = self.class_predict_k(enc_k)
-                else:
-                    query_embed = self.query_embed.repeat(B,1,1)
-                    cls_token_q1,_ = self.mha(query_embed,self.key(q1),self.value(q1))
-                    pred_class_q1 = self.class_predict(cls_token_q1)
-                    cls_token_k1,_ = self.mha(query_embed,self.key(k1),self.value(k1))
-                    pred_class_k1 = self.class_predict(cls_token_k1)
-
-
-                pred_idx_q1 = torch.argmax(pred_class_q1.squeeze(1),dim=-1)
-                pred_idx_k1 = torch.argmax(pred_class_k1.squeeze(1),dim=-1)
-                # st()
-                if len(class_labels_merged.shape) ==1:
-                    pred_idx_q1_ = pred_idx_q1
-                    pred_idx_k1_ = pred_idx_k1
-                    similarity_q1 = pred_idx_q1_==class_labels_merged
-                    similarity_k1 = pred_idx_k1_==class_labels_merged
-                    vis_dict['k1_classification_acc_unnorm'] = similarity_k1
-                    vis_dict['q1_classification_acc_unnorm'] = similarity_q1                    
-                else:
-                    pred_idx_q1_ = pred_idx_q1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
-                    pred_idx_k1_ = pred_idx_k1.unsqueeze(-1).repeat(1,class_labels_merged.shape[-1])
-                    similarity_q1 = pred_idx_q1_==class_labels_merged
-                    similarity_k1 = pred_idx_k1_==class_labels_merged
-                    similarity_k1 =similarity_k1.sum(-1).bool()
-                    similarity_q1 = similarity_q1.sum(-1).bool()
-                    vis_dict['k1_classification_acc_unnorm'] = similarity_k1
-                    vis_dict['q1_classification_acc_unnorm'] = similarity_q1
-                # st()
-                
-                num_correct_q1 = torch.sum(similarity_q1).float()
-                # st()
-                # num_correct_q1 = torch.sum(pred_idx_q1==class_labels_merged).float()
-                acc_q1 = num_correct_q1/total_num
-                
-                # vis_dict['q1_fc'] = enc_q['fc']
-                # vis_dict['k1_fc'] = enc_k['fc']
-                vis_dict['q1_classification_acc'] = acc_q1
-                # num_correct_k1 = torch.sum(pred_idx_k1==class_labels_merged).float()
-
-                
-                num_correct_k1 = torch.sum(similarity_k1).float()
-
-                acc_k1 = num_correct_k1/total_num
-                # st()
-                vis_dict['k1_classification_acc'] = acc_k1
-                # st()
-                # if self.global_steps == 1811:
-                #     st()
-                
-                # print(acc_q1,acc_k1)
-                # st():
-
+            vis_dict['k1_classification_acc'] = acc_k1
             # st()
+  
             self.global_steps += 1
 
             vis_dict['test_total_loss'] = 0.0
 
-            # loss = ari_score_q1
+  
             return vis_dict
         else:
-            crops, coords, flags, masks, class_labels,class_str = input
+            crops, class_labels,class_str = input
+            
 
             vis_dict = {}
 
@@ -540,220 +446,82 @@ class SlotCon(nn.Module):
                 crops_vis_img_2 = wandb.Image(crops_vis_1[:1], caption="input_image")
                 vis_dict['input_image_2'] = crops_vis_img_2
     
-                if isinstance(class_str[0][0], type(' ')):
-                    vis_dict['class_name'] = wandb.Html(class_str[0][0])
-
-            # st()
-            enc_q_0, enc_q_1 = (self.encoder_q(crops[0]),self.encoder_q(crops[1]))
-            
-            if self.ready_classifier:
-                x1, x2 = self.projector_q(enc_q_0['layer4']), self.projector_q(enc_q_1['layer4'])
-            else:
-                x1, x2 = self.projector_q(enc_q_0), self.projector_q(enc_q_1)
-            
-            with torch.no_grad():  # no gradient to keys
-                if not (self.args.do_tta or self.args.fine_tune) or self.args.update_teacher_tta:
-                    self._momentum_update_key_encoder()  # update the key encoder
-                
-                enc_k_0,enc_k_1 = (self.encoder_k(crops[0]),self.encoder_k(crops[1]))
-
-                if self.ready_classifier:
-                    y1, y2 = self.projector_k(enc_k_0['layer4']), self.projector_k(enc_k_1['layer4'])                    
+                if isinstance(class_str,str):
+                    vis_dict['test_class_name'] = wandb.Html(class_str)
                 else:
-                    y1, y2 = self.projector_k(enc_k_0), self.projector_k(enc_k_1)
-
-
-            (q1, score_q1), (q2, score_q2) = self.grouping_q(x1), self.grouping_q(x2)
-
-
-            score_q1_ = score_q1.flatten(2,3)
-            score_q2_ = score_q2.flatten(2,3)
-            # st()
-
-            # self.mha(self.)
-
-
-            # SSL loss
-            q1_aligned, q2_aligned = self.invaug(score_q1, coords[0], flags[0]), self.invaug(score_q2, coords[1], flags[1])
-
-            with torch.no_grad():
-                (k1, score_k1), (k2, score_k2) = self.grouping_k(y1), self.grouping_k(y2)
-                k1_aligned, k2_aligned = self.invaug(score_k1, coords[0], flags[0]), self.invaug(score_k2, coords[1], flags[1])
-            
-            cont_loss = self.group_loss_weight * self.self_distill(q1_aligned.permute(0, 2, 3, 1).flatten(0, 2), k2_aligned.permute(0, 2, 3, 1).flatten(0, 2)) \
-                + self.group_loss_weight * self.self_distill(q2_aligned.permute(0, 2, 3, 1).flatten(0, 2), k1_aligned.permute(0, 2, 3, 1).flatten(0, 2))
-            
-            if not (self.args.do_tta or self.args.fine_tune) or self.args.update_center_tta:
-                self.update_center(torch.cat([score_k1, score_k2]).permute(0, 2, 3, 1).flatten(0, 2))
-
-
-            cont_loss += (1. - self.group_loss_weight) * self.ctr_loss_filtered(q1, k2, score_q1, score_k2) \
-                + (1. - self.group_loss_weight) * self.ctr_loss_filtered(q2, k1, score_q2, score_k1)
-
+                    vis_dict['test_class_name'] = wandb.Html(class_str[0])
 
             # st()
+            enc_q_s = self.encoder_q(crops[0])
 
-
-            if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
-                mask_vis_1 = summ_instance_masks(score_q1[0],crops_vis_0[0],pred=True)
-                mask_vis_2 = summ_instance_masks(score_q2[0],crops_vis_1[0],pred=True)
-                mask_vis_1_img = wandb.Image(mask_vis_1, caption="pred_mask_new")
-                vis_dict['pred_mask_new_1'] = mask_vis_1_img
-                mask_vis_2_img = wandb.Image(mask_vis_2, caption="pred_mask_new")
-                vis_dict['pred_mask_new_2'] = mask_vis_2_img
-
-
-            if self.args.do_seg_class:
-                # qs = torch.cat([q1,q2],0)
-                q1_pred_class = self.class_predict(q1)
-                q2_pred_class = self.class_predict(q2)
-                q1_gt_labels = class_labels
-                q2_gt_labels = class_labels
-
-            # segmentation loss
-            if not self.args.do_only_classification:
-                masks_1, masks_2 = masks[0], masks[1]
-
-                if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
-                    mask_vis_1 = summ_instance_masks(masks_1[0],crops_vis_0[0],pred=False)
-                    mask_vis_2 = summ_instance_masks(masks_2[0],crops_vis_1[0],pred=False)
-                    mask_vis_1_img = wandb.Image(mask_vis_1, caption="gt_mask_new_1")
-                    vis_dict['gt_mask_new_1'] = mask_vis_1_img
-                    mask_vis_2_img = wandb.Image(mask_vis_2, caption="gt_mask_new_2")
-                    vis_dict['gt_mask_new_2'] = mask_vis_2_img            
-
-                
-                masks_1_ = masks_1.flatten(2,3)
-                masks_2_ = masks_2.flatten(2,3)
-                # st()
-                ari_score_1 = ari.adjusted_rand_index(masks_1_.permute(0,2,1).cpu(),score_q1_.permute(0,2,1).cpu())
-                ari_score_2 = ari.adjusted_rand_index(masks_2_.permute(0,2,1).cpu(),score_q2_.permute(0,2,1).cpu())
-                # print(ari_score_1, ari_score_2)
-                ari_score = ((ari_score_1 + ari_score_2)/2.0).mean()
-
-                if self.args.seg_weight >0.0:
-                    # score_q1_.permute(0,2,1).unique() masks_1_.permute(0,2,1).unique() masks_1_.permute(0,2,1).sum(-1).unique()
-                    new_indices = self.hungarian_matcher(score_q1_,masks_1_, do_softmax=True)
-                    masks_1_u_ = []
-                    score_q1_u_ = []
+  
+            
+            if self.args.no_byol:
+                enc_k_s = self.encoder_k(crops[1])
+            else:
+                with torch.no_grad():  # no gradient to keys
+                    self.encoder_k.eval()
+                    if not (self.args.do_tta or self.args.fine_tune) or self.args.update_teacher_tta:
+                        self._momentum_update_key_encoder()  # update the key encoder
                     
-                    class_1_u_ = []
-                    pred_class_1_u_ = []
+                    enc_k_s = self.encoder_k(crops[1])
 
-                    for ind_ex, indices_ex in enumerate(new_indices):
-                        p_indices,gt_indices = indices_ex
-                        masks_1_u_.append(masks_1_[ind_ex,gt_indices])
-                        score_q1_u_.append(score_q1_[ind_ex,p_indices])
-
-                        if self.args.do_seg_class:
-                            class_1_u_.append(q1_gt_labels[ind_ex,gt_indices])
-                            pred_class_1_u_.append(q1_pred_class[ind_ex,p_indices])
+            qs_aligned = enc_q_s['fc']
+            ks_aligned = enc_k_s['fc']
 
 
 
-                    masks_1_u = torch.stack(masks_1_u_)
-                    score_q1_u = torch.stack(score_q1_u_)
+            # if self.global_steps == 1:
+            #     st()
 
-                    class_1_u = torch.stack(class_1_u_)
-                    pred_class_1_u = torch.stack(pred_class_1_u_)
+            # if self.global_steps == 23:
+            #     st()
+            # st()
+            
+            visualize_plot = False
 
-                    ce_loss_1 = self.cross_entropy(score_q1_u, masks_1_u)
-                    # st()
-
-                    new_indices = self.hungarian_matcher(score_q2_,masks_2_, do_softmax=True)
-                    masks_2_u_ = []
-                    score_q2_u_ = []
-
-                    class_2_u_ = []
-                    pred_class_2_u_ = []
-
-                    for ind_ex, indices_ex in enumerate(new_indices):
-                        p_indices,gt_indices = indices_ex
-                        masks_2_u_.append(masks_2_[ind_ex,gt_indices])
-                        score_q2_u_.append(score_q2_[ind_ex,p_indices])
-
-                        if self.args.do_seg_class:
-                            class_2_u_.append(q2_gt_labels[ind_ex,gt_indices])
-                            pred_class_2_u_.append(q2_pred_class[ind_ex,p_indices])
+            if not self.args.no_byol:
+                if not (self.args.do_tta or self.args.fine_tune) or self.args.update_center_tta:
+                    if self.args.merge_probs:
+                        ks_aligned_prob = F.softmax(ks_aligned/self.teacher_temp,-1)
+                        self.update_center_together(ks_aligned_prob)
+                    else:
+                        self.update_center_together(ks_aligned)
 
 
-                    masks_2_u = torch.stack(masks_2_u_)
-                    score_q2_u = torch.stack(score_q2_u_)
 
-                    if self.args.do_seg_class:
-                        class_2_u = torch.stack(class_2_u_)
-                        pred_class_2_u = torch.stack(pred_class_2_u_)
-
-                    # st()
-                    ce_loss_2 = self.cross_entropy(score_q2_u, masks_2_u)
-
-                    seg_supervised_loss = ce_loss_1 + ce_loss_2
-                    # print(ce_loss_1,ce_loss_2,score_q2_u.mean())
-
+            if visualize_plot:
+                if self.args.no_byol:
+                    self.visualize_plot(qs_aligned, ks_aligned,self.center,class_labels[0], ignore_center=True)
                 else:
-                    seg_supervised_loss = 0.0
+                    self.visualize_plot(qs_aligned, ks_aligned,self.center,class_labels[0])
+                
+                vis_dict['qs_aligned_probs'] = wandb.Image("dump_plot_qs.png")
+                vis_dict['ks_aligned_probs'] = wandb.Image("dump_plot_ks.png")
+                if not self.args.no_byol:
+                    vis_dict['center_probs'] = wandb.Image("dump_plot_centers.png")                
+
+            # st()
+            if self.args.center_loss:
+                q1s = qs_aligned
+                center_logits = torch.stack(self.all_centers).mean(0,keepdims=True).repeat(q1s.shape[0],1) 
+                # st()
+                if self.args.merge_probs:
+                    cont_loss = self.self_distill_probs(q1s, center_logits)
+                else:
+                    cont_loss = self.self_distill(q1s, center_logits)
             else:
-                seg_supervised_loss = 0.0
-                ari_score = 0.0
-
-            if self.args.do_seg_class:
-                pred_classes = torch.cat([pred_class_1_u,pred_class_2_u],0)
-                pred_classes = pred_classes.reshape(-1,pred_classes.shape[-1])
-
-                class_labels_merged = torch.cat([class_1_u,class_2_u],0).reshape(-1)  
-                # st()
-                class_loss = self.class_loss(pred_classes.squeeze(1),class_labels_merged.long())
-
-                pred_idx = torch.argmax(pred_classes.squeeze(1),dim=-1)
-                class_labels_valid = (class_labels_merged != -1).float()
-                correct = (pred_idx==class_labels_merged).float()
-
-                num_correct = torch.sum(class_labels_valid*correct).float()
-                total_num = torch.sum(class_labels_valid).float()
-                acc = num_correct/total_num
-                vis_dict['classification_acc'] = acc
-            else:
-                class_loss = 0.0
-                # st()
-                # vis_dict['predicted_segments'] = acc
-
-                # st()
+                cont_loss = self.self_distill(qs_aligned, ks_aligned)
+            
 
 
+
+
+            # st()
             # classification only loss
             if self.args.do_only_classification:
-                class_labels_merged = torch.cat([class_labels,class_labels],0)
-                # st()
-                if self.ready_classifier:
-                    pred_class = torch.cat([enc_q_0['fc'],enc_q_1['fc']], 0)
-                elif self.args.vit_probing:
-                    enc_qs = torch.cat([enc_q_0,enc_q_1],0)
-                    enc_qs_ = enc_qs.flatten(2,3).permute(0,2,1)
-                    classifier_cls_token_ = self.classifier_cls_token.repeat(enc_qs_.shape[0],1,1)
-                    enc_qs_cls = torch.cat([classifier_cls_token_,enc_qs_],1)
-                    enc_qs_cls = self.classifier_embed(enc_qs_cls)
-                    enc_qs_cls = enc_qs_cls + self.classifier_pos_embed
-
-                    # st()
-                    for blk in self.classifier_blocks:
-                        enc_qs_cls = blk(enc_qs_cls)
-                    # st()
-                    enc_qs_cls = self.classifier_norm(enc_qs_cls)
-                    # st()
-                    enc_cls = enc_qs_cls[:, :1, :]
-                    pred_class = self.classifier_pred(enc_cls)[:, 0]
-                    # st()
-                elif self.args.max_pool_classifier:
-                    enc_qs = torch.cat([enc_q_0,enc_q_1],0)
-                    pred_class = self.class_predict_q(enc_qs)
-                else:
-                    B,_,_ = q1.shape
-                    qs = torch.cat([q1,q2],0)
-                    query_embed = self.query_embed.repeat(B*2,1,1)
-                    cls_token,_ = self.mha(query_embed,self.key(qs),self.value(qs))
-                    pred_class = self.class_predict(cls_token)
-                # st()
-
+                class_labels_merged = class_labels
+                pred_class = qs_aligned
                 # class_loss = 0.0
                 pred_idx = torch.argmax(pred_class.squeeze(1),dim=-1)
 
@@ -767,24 +535,17 @@ class SlotCon(nn.Module):
                     pred_idx_ = pred_idx.unsqueeze(-1).repeat(1,class_labels_merged.shape[1])
                     similarity = pred_idx_==class_labels_merged
                     num_correct = torch.sum(similarity.sum(-1).bool()).float()
-
-                # st()
                 # num_correct = torch.sum(pred_idx==class_labels_merged).float()
                 total_num = torch.tensor(class_labels_merged.shape[0]).float()
                 acc = num_correct/total_num
                 vis_dict['classification_acc'] = acc
-                # st()
 
             # st()
-            loss = (self.args.seg_weight * seg_supervised_loss) + (self.args.cont_weight * cont_loss) + (self.args.class_weight * class_loss )
 
-            
+            loss = (self.args.cont_weight * cont_loss) + (self.args.class_weight * class_loss )
             vis_dict['classification_loss'] = self.args.class_weight * class_loss
             vis_dict['cont_loss'] = self.args.cont_weight * cont_loss
-            vis_dict['seg_loss'] = self.args.seg_weight * seg_supervised_loss
             vis_dict['total_loss'] = loss
-            vis_dict['ari_score'] = ari_score
-
             self.global_steps += 1
 
         return loss, vis_dict
@@ -800,6 +561,21 @@ class SlotCon(nn.Module):
 
         # ema update
         self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
+
+    @torch.no_grad()
+    def update_center_together(self, teacher_output):
+        """
+        Update center used for teacher output.
+        """
+        teacher_output_ = list(teacher_output.unbind(0))
+        self.all_centers += teacher_output_
+        # st()
+        # batch_center = torch.sum(teacher_output, dim=0, keepdim=True)
+        # dist.all_reduce(batch_center)
+        # batch_center = batch_center / (len(teacher_output) * dist.get_world_size())
+
+        # # ema update
+        # self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
 
 @torch.no_grad()
 def concat_all_gather(tensor):

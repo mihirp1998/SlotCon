@@ -36,8 +36,10 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12344 --nproc_per_node=1 \
     --num-workers 8 \
     --seg-weight 0.0 \
     --class-weight 1.0 \
-    --test-dataset imagenet_corrupt_mod-gaussian_noise-5 \
+    --test-dataset imagenet_corrupt-gaussian_noise-5 \
     --cont-weight 0.0  --do-only-classification --only-test --d --seed 0
+    # --test-dataset imagenetval \    
+    # --test-dataset imagenet_corrupt-gaussian_noise-5 \    
     # --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth 
     # --d
     # --do-10 --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth
