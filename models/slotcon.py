@@ -152,27 +152,12 @@ class SemanticGrouping(nn.Module):
         slots = torch.einsum('bdhw,bkhw->bkd', x_prev, attn / attn.sum(dim=(2, 3), keepdim=True))
         return slots, dots
 
-def change_batchnorm_attr(model: torch.nn.Module):
-    # get children form model!
-    children = list(model.children())
-    flatt_children = []
-    if children == []:
-        if isinstance(model, torch.nn.SyncBatchNorm):
-            # model.eval()
-            model.track_running_stats = False
-            model.running_mean = None
-            model.running_var = None
-        # if model has no children; model is last child! :O
-        return model
-    else:
-       # look for children from children... to the last child!
-       for child in children:
-            try:
-                flatt_children.extend(change_batchnorm_attr(child))
-            except TypeError:
-                flatt_children.append(change_batchnorm_attr(child))
-    return flatt_children
 
+
+@torch.jit.script
+def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
+    """Entropy of softmax distribution from logits."""
+    return -(x.softmax(1) * x.log_softmax(1)).sum(1)
 
 
 class SlotCon(nn.Module):
@@ -206,7 +191,7 @@ class SlotCon(nn.Module):
 
         if self.args.no_byol:
             self.encoder_k = self.encoder_q
-            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)            
+            # nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)            
         else:
             self.encoder_k = encoder(head_type='early_return')
 
@@ -214,8 +199,8 @@ class SlotCon(nn.Module):
                 param_k.data.copy_(param_q.data)  # initialize
                 param_k.requires_grad = False  # not update by gradient
 
-            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
-            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_k)
+            # nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
+            # nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_k)
 
         self.student_temp = args.student_temp
         self.teacher_temp = args.teacher_temp
@@ -229,22 +214,44 @@ class SlotCon(nn.Module):
         self.K = int(args.num_instances * 1. / args.world_size / args.batch_size * args.epochs)
         self.k = int(args.num_instances * 1. / args.world_size / args.batch_size * (args.start_epoch - 1))
 
-    def re_init(self):
-        # st()
-        if self.args.no_byol:
-            self.encoder_q = self.encoder_name(head_type='early_return')
-            self.encoder_k = self.encoder_q
-        else:
-            self.encoder_q = self.encoder_name(head_type='early_return')
-            self.encoder_k = self.encoder_name(head_type='early_return') 
-            for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-                param_k.data.copy_(param_q.data)  # initialize
-                param_k.requires_grad = False  # not update by gradient
-            self.center = torch.zeros_like(self.center)
-            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
-            nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_k)
-        # print('hello')
-        # change_batchnorm_attr(self.encoder_k)
+    # def re_init_train(self):
+    #     # st()
+    #     if self.args.no_byol:
+    #         # st()
+    #         self.encoder_q = self.encoder_name(head_type='early_return')
+    #         nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
+    #         change_batchnorm_attr(self.encoder_q)
+    #         self.encoder_k = self.encoder_q
+    #     else:
+    #         self.encoder_q = self.encoder_name(head_type='early_return')
+    #         self.encoder_k = self.encoder_name(head_type='early_return') 
+    #         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
+    #             param_k.data.copy_(param_q.data)  # initialize
+    #             param_k.requires_grad = False  # not update by gradient
+    #         self.center = torch.zeros_like(self.center)
+    #         nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
+    #         nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_k)
+    #     # print('hello')
+
+
+    # def re_init_test(self):
+    #     # st()
+    #     if self.args.no_byol:
+    #         # st()
+    #         self.encoder_q = self.encoder_name(head_type='early_return')
+    #         nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
+    #         self.encoder_k = self.encoder_q
+    #     else:
+    #         self.encoder_q = self.encoder_name(head_type='early_return')
+    #         self.encoder_k = self.encoder_name(head_type='early_return') 
+    #         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
+    #             param_k.data.copy_(param_q.data)  # initialize
+    #             param_k.requires_grad = False  # not update by gradient
+    #         self.center = torch.zeros_like(self.center)
+    #         nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_q)
+    #         nn.SyncBatchNorm.convert_sync_batchnorm(self.encoder_k)
+
+
         # st()
         # print('hello')
         # self.encoder_k.eval()               
@@ -292,6 +299,12 @@ class SlotCon(nn.Module):
     def self_distill(self, q, k):
         q = F.log_softmax(q / self.student_temp, dim=-1)
         k = F.softmax(k / self.teacher_temp, dim=-1)
+        return torch.sum(-k * q, dim=-1).mean()
+
+
+    def self_distill_wo_temp(self, q, k):
+        q = F.log_softmax(q , dim=-1)
+        k = F.softmax(k, dim=-1)
         return torch.sum(-k * q, dim=-1).mean()
 
     def self_distill_probs(self, q, k):
@@ -357,7 +370,11 @@ class SlotCon(nn.Module):
 
 
         # st()
-        
+    def softmax_entropy(x: torch.Tensor) -> torch.Tensor:
+        """Entropy of softmax distribution from logits."""
+        return -(x.softmax(1) * x.log_softmax(1)).sum(1)
+
+
 
     def forward(self, input, is_test=False):
         if is_test:
@@ -432,7 +449,9 @@ class SlotCon(nn.Module):
   
             return vis_dict
         else:
-            crops, class_labels,class_str = input
+            crops, class_labels,class_str, imagenet_train, imagenet_clsidx = input
+            loss = torch.tensor(0.0)
+            # st()
             
 
             vis_dict = {}
@@ -469,11 +488,20 @@ class SlotCon(nn.Module):
             qs_aligned = enc_q_s['fc']
             ks_aligned = enc_k_s['fc']
 
-
-
+            if self.args.entropy_loss:
+                qs_aligned_entropy = softmax_entropy(qs_aligned).mean()
+                ks_aligned_entropy = softmax_entropy(ks_aligned).mean()
+                cross_entropy_loss = (qs_aligned_entropy + ks_aligned_entropy)/2
+                vis_dict['cross_entropy_loss'] = cross_entropy_loss
+                loss = loss + (cross_entropy_loss * self.args.cross_entropy_weight)
+            # st()
+            # print(list(self.encoder_q.model2.layer4.children())[0].bn1.weight.sum())
+            # print(list(self.encoder_q.model2.layer1.children())[0].bn1.weight.sum())  
+            # print(list(self.encoder_q.model2.layer4.children())[0].conv1.weight.sum())          
+            # print(list(self.encoder_q.model2.layer1.children())[0].bn1.running_mean)
+            # print()
             # if self.global_steps == 1:
             #     st()
-
             # if self.global_steps == 23:
             #     st()
             # st()
@@ -489,7 +517,7 @@ class SlotCon(nn.Module):
                         self.update_center_together(ks_aligned)
 
 
-
+            import torch
             if visualize_plot:
                 if self.args.no_byol:
                     self.visualize_plot(qs_aligned, ks_aligned,self.center,class_labels[0], ignore_center=True)
@@ -511,13 +539,40 @@ class SlotCon(nn.Module):
                 else:
                     cont_loss = self.self_distill(q1s, center_logits)
             else:
-                cont_loss = self.self_distill(qs_aligned, ks_aligned)
+                # st()
+                if self.args.wo_temp:
+                    cont_loss = self.self_distill_wo_temp(qs_aligned, ks_aligned)
+                elif self.args.cross_entropy:
+                    loss_fn = nn.CrossEntropyLoss()
+                    if self.args.detach_target:
+                        cont_loss = loss_fn(qs_aligned, F.softmax(ks_aligned/self.teacher_temp,-1).detach())
+                    else:
+                        cont_loss = loss_fn(qs_aligned, F.softmax(ks_aligned/self.teacher_temp,-1))
+                elif self.args.mse_loss:
+                    loss_fn = nn.MSELoss()
+                    cont_loss = loss_fn(qs_aligned, ks_aligned)
+                elif self.args.mse_loss_inter:
+                    loss_fn = nn.MSELoss()
+                    cont_loss = loss_fn(enc_q_s['layer4'], enc_k_s['layer4'])
+                else:
+                    cont_loss = self.self_distill(qs_aligned, ks_aligned)
             
 
 
+            if self.args.joint_train:
+                imgnet_enc_s = self.encoder_q(imagenet_train)
+                imgnet_enc_s_fc = imgnet_enc_s['fc']
+                imgnet_cls_loss = self.class_loss(imgnet_enc_s_fc, imagenet_clsidx)
+                imgnet_pred_idx = torch.argmax(imgnet_enc_s_fc,dim=-1)
+                imgnet_similarity = imgnet_pred_idx==imagenet_clsidx
+                imgnet_num_correct = torch.sum(imgnet_similarity).float()
+                imgnet_total_num = torch.tensor(imagenet_clsidx.shape[0]).float()
+                imgnet_acc = imgnet_num_correct/imgnet_total_num
+                vis_dict['imgnet_classification_acc'] = imgnet_acc                
+                loss = loss + self.args.cls_joint_weight * imgnet_cls_loss
+                vis_dict['imgnet_cls_loss'] = imgnet_cls_loss *self.args.cls_joint_weight
+                # st()
 
-
-            # st()
             # classification only loss
             if self.args.do_only_classification:
                 class_labels_merged = class_labels
@@ -539,10 +594,11 @@ class SlotCon(nn.Module):
                 total_num = torch.tensor(class_labels_merged.shape[0]).float()
                 acc = num_correct/total_num
                 vis_dict['classification_acc'] = acc
+                loss = loss  + (self.args.class_weight * class_loss )
 
             # st()
 
-            loss = (self.args.cont_weight * cont_loss) + (self.args.class_weight * class_loss )
+            loss = loss + (self.args.cont_weight * cont_loss)
             vis_dict['classification_loss'] = self.args.class_weight * class_loss
             vis_dict['cont_loss'] = self.args.cont_weight * cont_loss
             vis_dict['total_loss'] = loss

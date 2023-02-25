@@ -11,13 +11,13 @@ import wandb
 
 import ipdb
 st = ipdb.set_trace
-
+import logging as logger
 import numpy as np
 import torch
 torch.manual_seed(0)
 
-import torch.distributed as dist
-import torch.backends.cudnn as cudnn
+# import torch.distributed as dist
+# import torch.backends.cudnn as cudnn
 
 from data.datasets import ImageNet
 from data.transforms import ClassificationPresetTrain,ClassificationPresetEval
@@ -26,7 +26,7 @@ from data.transforms import ClassificationPresetTrain,ClassificationPresetEval
 from models import resnet
 from models.slotcon import SlotCon
 from utils.lars import LARS
-from utils.logger import setup_logger
+# from utils.logger import setup_logger
 from utils.lr_scheduler import get_scheduler
 from utils.util import AverageMeter
 
@@ -61,6 +61,8 @@ def get_parser():
     parser.add_argument('--update-center-tta', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
     parser.add_argument('--update-teacher-tta', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
     parser.add_argument('--center-loss', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
+    parser.add_argument('--entropy-loss', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
+    parser.add_argument('--track-stats', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
 
     # optim.
     parser.add_argument('--batch-size', type=int, default=512, help='total batch size')
@@ -75,7 +77,9 @@ def get_parser():
     parser.add_argument('--start-epoch', type=int, default=1, help='used for resume')
     parser.add_argument('--epochs', type=int, default=800, help='number of training epochs')
     parser.add_argument('--cont-weight', type=float, default=1.0, help='cont-weight')
+    parser.add_argument('--cross-entropy-weight', type=float, default=0.2, help='cont-weight')    
     parser.add_argument('--seg-weight', type=float, default=0.0, help='seg weight')
+    parser.add_argument('--cls-joint-weight', type=float, default=1.0, help='seg weight')
     parser.add_argument('--class-weight', type=float, default=0.0, help='classification weight')    
     parser.add_argument('--tta-steps', type=int, default=12, help='seg weight')    
     parser.add_argument('--do-only-classification', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
@@ -90,6 +94,13 @@ def get_parser():
     parser.add_argument('--do-10', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')            
     parser.add_argument('--no-byol', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')                
     parser.add_argument('--merge-probs', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')                    
+    parser.add_argument('--custom-params', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
+    parser.add_argument('--wo-temp', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
+    parser.add_argument('--mse-loss', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
+    parser.add_argument('--cross-entropy', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')            
+    parser.add_argument('--mse-loss-inter', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
+    parser.add_argument('--joint-train', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
+
     
     # misc
     parser.add_argument('--annot-dir', type=str, default='/projects/katefgroup/datasets/coco/annotations/mod_semantic_train2017/', help='output director')
@@ -112,155 +123,111 @@ def get_parser():
     parser.add_argument('--no-load-optim', action='store_true', help='auto resume from current.pth')    
     parser.add_argument('--no-aug', action='store_true', help='auto resume from current.pth')        
     parser.add_argument('--custom-lr', action='store_true', help='auto resume from current.pth')        
+    parser.add_argument('--detach-target', action='store_true', help='auto resume from current.pth')            
 
     args = parser.parse_args()
-    if os.environ["LOCAL_RANK"] is not None:
-        args.local_rank = int(os.environ["LOCAL_RANK"])
+    # if os.environ["LOCAL_RANK"] is not None:
+    #     args.local_rank = int(os.environ["LOCAL_RANK"])
     return args 
 
 def get_optimizer(args, model):
-    if args.adam:
+    # st()
+    if args.custom_params:
         trainable_params = []
-        for name, param in model.named_parameters():
-            if "encoder_q" in name:
-                param.requires_grad = True
-                trainable_params.append(param)
-            else:
-                param.requires_grad = False
         all_names = []
         for name, param in model.named_parameters():
-            if param.requires_grad:
-                all_names.append(name)            
+            if "bn" in name:
+                param.requires_grad = True
+                trainable_params.append(param)
+                all_names.append(name)
+            else:
+                param.requires_grad = False
+    else:
+        trainable_params = model.parameters()
+    # st()
+    if args.adam:
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            trainable_params,
             lr=args.base_lr,
             weight_decay=args.weight_decay)    
         # st()        
     else:
         if args.optimizer == 'sgd':
             optimizer = torch.optim.SGD(
-                model.parameters(),
+                trainable_params,
                 lr=args.batch_size * args.world_size / 256 * args.base_lr,
                 momentum=args.momentum,
                 weight_decay=args.weight_decay)
         elif args.optimizer == 'lars':
-            # st()
-            # trainable_params = []
-            # for name, param in model.named_parameters():
-            #     if "bn" in name and "encoder_q" in name:
-            #         param.requires_grad = True
-            #         trainable_params.append(param)
-            #     else:
-            #         param.requires_grad = False
-            # all_names = []
-            # for name, param in model.named_parameters():
-            #     if param.requires_grad:
-            #         all_names.append(name)
-
-            # print("all_names", all_names)
-            # st() model.parameters()
 
             optimizer = LARS(
-                model.parameters(),
+                trainable_params,
                 lr=args.batch_size * args.world_size / 256 * args.base_lr,
                 momentum=args.momentum,
                 weight_decay=args.weight_decay)
 
     return optimizer
 
-def build_model(args):
+def change_batchnorm_attr(model: torch.nn.Module):
+    # get children form model!
+    children = list(model.children())
+    flatt_children = []
+    if children == []:
+        if isinstance(model, torch.nn.SyncBatchNorm):
+            # model.eval()
+            model.track_running_stats = False
+            model.running_mean = None
+            model.running_var = None
+        # if model has no children; model is last child! :O
+        return model
+    else:
+       # look for children from children... to the last child!
+       for child in children:
+            try:
+                flatt_children.extend(change_batchnorm_attr(child))
+            except TypeError:
+                flatt_children.append(change_batchnorm_attr(child))
+    return flatt_children
+
+
+def build_model(args, do_test=False, skip_optmizer = False):
     encoder = resnet.__dict__[args.arch]
     model = SlotCon(encoder, args).cuda()
 
 
-
-    if args.fine_tune:
-        # st()
-        for name, param in model.named_parameters():
-            # print(name)
-            if "classifier" in name:
-                param.requires_grad = True
-                # trainable_params.append(param)
-            else:
-                param.requires_grad = False
-
-    # st()
-
-    num_params = count_parameters(model)
-    print(f"num_params {num_params}")
-    # st()
-    if args.do_tta:
-        if args.adam:
-            trainable_params = []
-            for name, param in model.named_parameters():
-                if "encoder_q" in name:
-                    param.requires_grad = True
-                    trainable_params.append(param)
-                else:
-                    param.requires_grad = False
-            all_names = []
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    all_names.append(name)            
-            optimizer = torch.optim.AdamW(
-                model.parameters(),
-                lr=args.base_lr,
-                weight_decay=args.weight_decay)    
-            # st()        
-        else:
-            if args.optimizer == 'sgd':
-                optimizer = torch.optim.SGD(
-                    model.parameters(),
-                    lr=args.batch_size * args.world_size / 256 * args.base_lr,
-                    momentum=args.momentum,
-                    weight_decay=args.weight_decay)
-            elif args.optimizer == 'lars':
-                # st()
-                # trainable_params = []
-                # for name, param in model.named_parameters():
-                #     if "bn" in name and "encoder_q" in name:
-                #         param.requires_grad = True
-                #         trainable_params.append(param)
-                #     else:
-                #         param.requires_grad = False
-                # all_names = []
-                # for name, param in model.named_parameters():
-                #     if param.requires_grad:
-                #         all_names.append(name)
-
-                # print("all_names", all_names)
-                # st() model.parameters()
-
-                optimizer = LARS(
-                    model.parameters(),
-                    lr=args.batch_size * args.world_size / 256 * args.base_lr,
-                    momentum=args.momentum,
-                    weight_decay=args.weight_decay)
-                # st()     
+    if do_test:
+        pass
     else:
-        if args.optimizer == 'sgd':
-            optimizer = torch.optim.SGD(
-                model.parameters(),
-                lr=args.batch_size * args.world_size / 256 * args.base_lr,
-                momentum=args.momentum,
-                weight_decay=args.weight_decay)
-        elif args.optimizer == 'lars':
-            optimizer = LARS(
-                model.parameters(),
-                lr=args.batch_size * args.world_size / 256 * args.base_lr,
-                momentum=args.momentum,
-                weight_decay=args.weight_decay)
-        elif args.optimizer == 'adam':
-            optimizer = torch.optim.AdamW(
-                model.parameters(),
-                lr=args.batch_size * args.world_size / 256 * args.base_lr,
-                weight_decay=args.weight_decay)          
+        if args.track_stats:
+            pass
         else:
-            raise NotImplementedError
+            change_batchnorm_attr(model)
 
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+    optimizer = get_optimizer(args,model)
 
-    return model, optimizer
+    if skip_optmizer:
+        return model
+    else:
+        return model, optimizer
+
+
+def load_model_optim(args,model):
+
+    resnet_saved = torch.load('resnet_saved_v21gpu.pth')
+    # st()
+
+    if args.track_stats:
+        model.load_state_dict(resnet_saved)
+    else:
+        model.load_state_dict(resnet_saved,strict=False)
+        change_batchnorm_attr(model)
+
+    # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+    optimizer = get_optimizer(args,model)
+    return model,optimizer
+
+
 
 
 def save_checkpoint(args, epoch, model, optimizer, scheduler, scaler=None):
@@ -302,7 +269,7 @@ def load_checkpoint(args, model, optimizer, scheduler, scaler=None):
         checkpoint = torch.load(args.resume, map_location='cpu')
         # st()
 
-        model.module.re_init(args)
+        model.re_init(args)
 
         if args.do_tta or args.fine_tune:
             for key_val in  checkpoint['model'].keys():
@@ -353,6 +320,9 @@ def main(args):
     else:
         raise NotImplementedError
 
+    if args.joint_train:
+        args.cls_joint_weight = 1.0 - args.cont_weight
+
     # prepare data
     import socket
     hostname = socket.gethostname()
@@ -368,16 +338,25 @@ def main(args):
     train_dataset = ImageNet(args.dataset, args.data_dir, transform, eval_transform, transform, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps, args=args)
     test_dataset = ImageNet(args.test_dataset, args.data_dir, transform, eval_transform, transform, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps, args=args)
 
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    if args.joint_train:
+        joint_dataset = ImageNet('ImageNet', args.data_dir, transform, eval_transform, transform, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps, args=args)
+        # joint_sampler = torch.utils.data.distributed.DistributedSampler(joint_dataset)
+        joint_loader = torch.utils.data.DataLoader(
+            joint_dataset, batch_size=args.batch_size, shuffle=(None is None), 
+            num_workers=args.num_workers, pin_memory=True, sampler=None, drop_last=True)
+
+
+
+    # train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None), 
-        num_workers=args.num_workers, pin_memory=True, sampler=train_sampler, drop_last=True)
+        train_dataset, batch_size=args.batch_size, shuffle=(None is None), 
+        num_workers=args.num_workers, pin_memory=True, sampler=None, drop_last=True)
     # st()
     # prepare test data
-    test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset)
+    # test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset)
     test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=args.batch_size, shuffle=(test_sampler is None), 
-        num_workers=args.num_workers, pin_memory=True, sampler=test_sampler, drop_last=True)
+        test_dataset, batch_size=args.batch_size, shuffle=(None is None), 
+        num_workers=args.num_workers, pin_memory=True, sampler=None, drop_last=True)
 
     args.num_instances = len(train_loader.dataset)
     logger.info(f"length of training dataset: {args.num_instances}")
@@ -408,18 +387,18 @@ def main(args):
 
     if args.resume:
         load_checkpoint(args, model, optimizer, scheduler, scaler)
-        model.module.global_steps = (args.start_epoch-1) * len(train_loader)
+        model.global_steps = (args.start_epoch-1) * len(train_loader)
 
     
     if args.only_test:
         test(test_loader, model, args, scaler)
     else:
         for epoch in range(args.start_epoch, args.epochs + 1):
-            train_sampler.set_epoch(epoch)
+            # train_sampler.set_epoch(epoch)
             # train for one epoch
-            train(train_loader, test_loader, model, optimizer, scaler, scheduler, epoch, args)
+            train(train_loader, test_loader, joint_loader, model, optimizer, scaler, scheduler, epoch, args)
 
-            if dist.get_rank() == 0 and (epoch % args.save_freq == 0 or epoch == args.epochs):
+            if (epoch % args.save_freq == 0 or epoch == args.epochs):
                 save_checkpoint(args, epoch, model, optimizer, scheduler, scaler)
 
 def get_children(model: torch.nn.Module):
@@ -446,10 +425,10 @@ def test(test_loader, model, args,scaler):
     num_val = 1
     k1_acc = []
     q1_acc = []    
-    model.module.eval()
+    model.eval()
     # st()
-    # get_children(model.module)
-    # for name, module in  model.module.named_modules():
+    # get_children(model)
+    # for name, module in  model.named_modules():
 
     #     if 'bn' in name:
     #         # st()
@@ -482,17 +461,17 @@ def test(test_loader, model, args,scaler):
                     vis_dict['q1_acc_avg'] = sum(q1_acc)/len(q1_acc)
 
                 print("k1_acc_avg",vis_dict['k1_acc_avg'], "q1_acc_avg",vis_dict['q1_acc_avg'], list(vis_dict['k1_classification_acc_unnorm'].cpu().numpy()) )
-                if not args.d and dist.get_rank() == 0:
-                    wandb.log(vis_dict,step=model.module.global_steps)
+                if not args.d:
+                    wandb.log(vis_dict,step=model.global_steps)
 
 
 
-def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, args):
+def train(train_loader,test_loader, joint_loader, model, optimizer, scaler, scheduler, epoch, args):
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     # switch to train mode
     run_name = args.output_dir.split("/")[-1]
-    model.module.train()
+    model.train()
     model.train()
     num_params = count_parameters(model)
     print(f"num_params {num_params}")
@@ -506,51 +485,69 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
     end = time.time()
 
     # st()
-    model.module.re_init()
-    model.cuda()
-    optimizer = get_optimizer(args,model)
+
+
+
 
 
     train_len = len(train_loader)
     for i, batch in enumerate(train_loader):
-
-        image_norm,  crops, class_labels, class_str, fpath = batch
+        image_norm,  crops, class_labels, class_str, fpath, imagenet_train, imagenet_clsidx = batch
         crops = [crop.cuda(non_blocking=True) for crop in crops]
 
         image_norm = image_norm.cuda(non_blocking=True)
         class_labels = class_labels.cuda(non_blocking=True)
 
+        imagenet_train = imagenet_train.cuda(non_blocking=True)
+        imagenet_clsidx = imagenet_clsidx.cuda(non_blocking=True)
+
+
+        # st()
         
         if ((i%(args.tta_steps) == 0 or args.overfit) and args.do_tta):
-            model.module.eval()
-            model.eval()
+            model_baseline,_ = build_model(args, True)
+            # st()
+            model_baseline.eval()
+            
             with torch.no_grad():
                 # with torch.cuda.amp.autocast(scaler is not None):
-                print("start")
-                vis_dict = model((image_norm, class_labels, class_str), is_test=True)
+                # print("start")
+                # model.re_init_test()
+                vis_dict = model_baseline((image_norm, class_labels, class_str), is_test=True)
 
                 class_acc_q, class_acc_k = vis_dict['q1_classification_acc'],vis_dict['k1_classification_acc']
+                # st()
                 start_acc_q.append(class_acc_q)
                 start_acc_k.append(class_acc_k)
-                print("start",class_acc_q,class_acc_k)
-                
-                if not args.d and dist.get_rank() == 0:
-                    wandb.log(vis_dict,step=model.module.global_steps)
+                # print("start",class_acc_q,class_acc_k)
+
+                if not args.d:
+                    wandb.log(vis_dict,step=model.global_steps)
+            
+
+            # refresh parameters
+            model, optimizer  = load_model_optim(args,model)
+            # model = build_model(args, skip_optmizer=True)
+            num_params = count_parameters(model)
+            print(f"num_params {num_params}")
+        # st()
+
 
         model.train()
-        model.module.train()        
+        model.train()        
 
         # print('training')
 
-        loss, vis_dict = model((crops,class_labels,class_str))
+        loss, vis_dict = model((crops,class_labels,class_str, imagenet_train, imagenet_clsidx))
+        # st()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         vis_dict['lr'] = optimizer.param_groups[0]['lr']
 
-        if not args.d and dist.get_rank() == 0:
-            wandb.log(vis_dict,step=model.module.global_steps)
+        if not args.d:
+            wandb.log(vis_dict,step=model.global_steps)
 
         loss_meter.update(loss.item(), crops[0].size(0))
 
@@ -563,8 +560,9 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
         if args.do_tta:
             if (i+1)%(args.tta_steps) == 0 and not args.overfit:
                 model.eval()
-                model.module.eval()
+                model.eval()
                 with torch.no_grad():
+                    # model.re_init_test()
                     # with torch.cuda.amp.autocast(scaler is not None):
                     vis_dict = model((image_norm, class_labels, class_str), is_test=True)
                     vis_dict['cont_loss'] = float("nan")
@@ -582,18 +580,22 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                     start_mean_k = torch.mean(torch.tensor(start_acc_k))
 
                     # model, optimizer = build_model(args)
-                    model.module.re_init()
-                    model.cuda()
-                    optimizer = get_optimizer(args,model)
+                    # model.re_init()
+                    # model.cuda()
+                    # optimizer = get_optimizer(args,model)
                     print('reinitializing')                    
 
-                    model.module.set_means(start_mean_q, end_mean_q,start_mean_k, end_mean_k)
+                    # model.set_means(start_mean_q, end_mean_q,start_mean_k, end_mean_k)
+                    vis_dict['start_mean_q'] = start_mean_q
+                    vis_dict['end_mean_q'] = end_mean_q
+                    vis_dict['start_mean_k'] = start_mean_k
+                    vis_dict['end_mean_k'] = end_mean_k
 
 
                     print(f"Mean Scores: Start- {start_mean_k},{start_mean_q}; End- {end_mean_k},{end_mean_q}")
 
-                    if not args.d and dist.get_rank() == 0:
-                        wandb.log(vis_dict,step=model.module.global_steps)
+                    if not args.d:
+                        wandb.log(vis_dict,step=model.global_steps)
                         
                         
 
@@ -606,7 +608,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             etas = batch_time.avg * (train_len - i)
             logger.info(
                 f'Train: [{epoch}/{args.epochs}][{i}/{train_len}]  '
-                f'Exp name: {run_name}'
+                f'Exp name: {run_name}  '
                 f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.4f}  '
                 f'time {batch_time.val:.4f} ({batch_time.avg:.4f})  '
                 f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f}))  ')
@@ -617,28 +619,28 @@ if __name__ == '__main__':
 
     run_name = args.output_dir.split("/")[-1]
 
-    torch.cuda.set_device(args.local_rank)
-    torch.distributed.init_process_group(backend='nccl', init_method='env://')
-    cudnn.benchmark = True
+    # torch.cuda.set_device(args.local_rank)
+    # torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    # cudnn.benchmark = True
 
-    args.world_size = dist.get_world_size()
+    args.world_size = 1
     args.batch_size = int(args.batch_size / args.world_size)
 
     # setup logger
     os.makedirs(args.output_dir, exist_ok=True)
-    logger = setup_logger(output=args.output_dir,
-                          distributed_rank=dist.get_rank(), name="slotcon")
-    if dist.get_rank() == 0:
-        path = os.path.join(args.output_dir, "config.json")
-        with open(path, 'w') as f:
-            json.dump(vars(args), f, indent=2)
-        logger.info("Full config saved to {}".format(path))
-        if not args.d:
-            if run_name is not '':
-                wandb.init(project='slot_con_5', entity="mihirp",id= run_name)
-            else:
-                wandb.init(project='slot_con_5', entity="mihirp")
-            wandb.config.update(args)
+    # logger = setup_logger(output=args.output_dir,
+    #                       distributed_rank=dist.get_rank(), name="slotcon")
+    # if dist.get_rank() == 0:
+    path = os.path.join(args.output_dir, "config.json")
+    with open(path, 'w') as f:
+        json.dump(vars(args), f, indent=2)
+    logger.info("Full config saved to {}".format(path))
+    if not args.d:
+        if run_name is not '':
+            wandb.init(project='slot_con_6', entity="mihirp",id= run_name)
+        else:
+            wandb.init(project='slot_con_6', entity="mihirp")
+        wandb.config.update(args)
     # print args
     logger.info(
         "\n".join("%s: %s" % (k, str(v))

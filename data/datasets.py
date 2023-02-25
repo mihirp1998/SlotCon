@@ -98,6 +98,10 @@ class ImageNet(Dataset):
             # self.fnames = pickle.load(open('imagenet' + '/val_gaussian_noise_5.p','rb'))
         else:
             self.fnames = pickle.load(open('imagenet' + '/train_list.p','rb'))
+        self.joint_train = args.joint_train
+        if self.joint_train:
+            self.traindata_fnames = pickle.load(open('imagenet' + '/train_list.p','rb'))
+
         # with open(f'{data_dir}/train/index_synset.yaml', 'r') as file:
         #     indexfolder_mapping = yaml.safe_load(file)pickle.dump(self.fnames,open(data_dir + '/val_list.p','wb'))
         # self.folder_index_mapping = {v: k for k, v in indexfolder_mapping.items()}
@@ -139,6 +143,20 @@ class ImageNet(Dataset):
         else:
             return len(self.fnames)
 
+    def get_class_label_str(self, foldername):
+        if self.do_objectnet:
+            class_label = []
+            class_str = []
+
+            for object_val in self.objectnet_cats[foldername]:
+                class_label.append(torch.tensor(int(self.folder_index_mapping[object_val[1]][0]) - 1 ))
+                class_str.append(self.folder_index_mapping[object_val[1]][1])
+            class_label = np.array(class_label)   
+        else:
+            class_label = torch.tensor(int(self.folder_index_mapping[foldername][0]) - 1 )
+            class_str = self.folder_index_mapping[foldername][1]    
+        return class_label,class_str
+
     def __getitem__(self, idx):
         if self.do_tta:
             num_iter = self.total_idx//self.batch_size 
@@ -160,29 +178,16 @@ class ImageNet(Dataset):
         else:
             main_filename = '/'.join(fpath.split('/')[-3:])
         fpath = self.data_dir + '/' + main_filename
-
-
         foldername = fpath.split("/")[-2] 
-        if self.do_objectnet:
-            class_label = []
-            class_str = []
-
-            for object_val in self.objectnet_cats[foldername]:
-                class_label.append(torch.tensor(int(self.folder_index_mapping[object_val[1]][0]) - 1 ))
-                class_str.append(self.folder_index_mapping[object_val[1]][1])
-            class_label = np.array(class_label)
-                
-        else:
-            class_label = torch.tensor(int(self.folder_index_mapping[foldername][0]) - 1 )
-            class_str = self.folder_index_mapping[foldername][1]
+        class_label,class_str = self.get_class_label_str(foldername)
 
         image = Image.open(fpath).convert('RGB')
         
         if self.do_objectnet:
             image = Image.fromarray(np.array(image)[2:-2,2:-2])
 
-            
         H,W = np.array(image).shape[:2]
+            
         # st()
         return_val = []
         crops = []
@@ -202,6 +207,20 @@ class ImageNet(Dataset):
         return_val.append(class_label)
         return_val.append(class_str)
         return_val.append(fpath.split('/')[-1])
+
+        # st()
+        # if self.joint_train:
+        traindata_idx = random.randint(0,len(self.traindata_fnames))
+        train_file = self.traindata_fnames[traindata_idx]
+        imagenet_foldername = train_file.split('/')[-2]
+        image_train = Image.open(train_file).convert('RGB')
+        imagenet_train = self.transform(image_train)
+        imgnet_class_label,imgnet_class_str = self.get_class_label_str(imagenet_foldername)
+        return_val.append(imagenet_train)
+        return_val.append(imgnet_class_label)
+        # st()
+        # if self.args.joint_train:
+        #     st()
 
         return_val = tuple(return_val)
         # st()

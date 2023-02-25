@@ -10,11 +10,11 @@ data_dir="/projects/katefgroup/datasets/ImageNet/"
 output_dir="./output/tta_imagenet_val_10_1step_highler"
 output_dir="./output/tta_imagenet_corrupt_motion_blur_5_lowlr_5step_2"
 output_dir="./output/tta_imagenet_corrupt_snow_5_lowlr_5step_2"
-output_dir="./output/tta_imagenet_corrupt_gaussian_noise_11"
+output_dir="./output/tta_gauss_ce_full_joint_dtch_fix_weight13_track_smallparam"
+# _tstats
 # imagenet_corrupt-snow-5
 # imagenetval
-CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12341 --nproc_per_node=1 \
-    main_pretrain.py \
+CUDA_VISIBLE_DEVICES=0 python main_pretrain.py \
     --dataset imagenet_corrupt-gaussian_noise-5 \
     --data-dir ${data_dir} \
     --output-dir ${output_dir} \
@@ -27,10 +27,10 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12341 --nproc_per_node=1 \
     --teacher-temp 0.07 \
     --group-loss-weight 0.5 \
     \
-    --batch-size 128 \
+    --batch-size 64 \
     --optimizer sgd \
-    --base-lr 0.01 \
-    --weight-decay 0.0 \
+    --base-lr 2e-1 \
+    --weight-decay 1e-5 \
     --warmup-epoch 0 \
     --epochs 100 \
     --fp16 \
@@ -44,7 +44,21 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12341 --nproc_per_node=1 \
     --do-tta \
     --no-load-optim \
     --class-weight 0.0 \
-    --cont-weight 1.0  --do-only-classification --log-freq 1 --no-byol --d
+    --cont-weight 0.5  --do-only-classification --log-freq 5 --no-byol  --cross-entropy --joint-train  --detach-target --track-stats --custom-params 
+    # --d
+    # --custom-params --d
+    # --d     --cls-joint-weight 1.0 \
+    #  --d
+    # --overfit 
+    # --custom-params --track-stats --entropy-loss
+    #  --d
+    #  --d
+    #   --d
+    # --track-stats
+    # --custom-params
+    # --entropy-loss
+    #  --d
+    # --d
     #  --d
     # --d
 # --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth
