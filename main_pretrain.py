@@ -115,6 +115,29 @@ def get_parser():
         args.local_rank = int(os.environ["LOCAL_RANK"])
     return args 
 
+def load_optimizer(model, args):
+    if args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=args.batch_size * args.world_size / 256 * args.base_lr,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay)
+    elif args.optimizer == 'lars':
+        optimizer = LARS(
+            model.parameters(),
+            lr=args.batch_size * args.world_size / 256 * args.base_lr,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay)
+    elif args.optimizer == 'adam':
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.batch_size * args.world_size / 256 * args.base_lr,
+            weight_decay=args.weight_decay)          
+    else:
+        raise NotImplementedError
+    return optimizer
+
+
 def build_model(args):
     encoder = resnet.__dict__[args.arch]
     model = SlotCon(encoder, args).cuda()
@@ -153,7 +176,6 @@ def build_model(args):
                 model.parameters(),
                 lr=args.base_lr,
                 weight_decay=args.weight_decay)    
-            # st()        
         else:
             if args.optimizer == 'sgd':
                 optimizer = torch.optim.SGD(
@@ -162,22 +184,6 @@ def build_model(args):
                     momentum=args.momentum,
                     weight_decay=args.weight_decay)
             elif args.optimizer == 'lars':
-                # st()
-                # trainable_params = []
-                # for name, param in model.named_parameters():
-                #     if "bn" in name and "encoder_q" in name:
-                #         param.requires_grad = True
-                #         trainable_params.append(param)
-                #     else:
-                #         param.requires_grad = False
-                # all_names = []
-                # for name, param in model.named_parameters():
-                #     if param.requires_grad:
-                #         all_names.append(name)
-
-                # print("all_names", all_names)
-                # st() model.parameters()
-
                 optimizer = LARS(
                     model.parameters(),
                     lr=args.batch_size * args.world_size / 256 * args.base_lr,
@@ -475,7 +481,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
 
 
         if ((i%(args.tta_steps) == 0 or args.overfit) and args.do_tta):
-            # st()
+
             model.eval()
             with torch.no_grad():
                 with torch.cuda.amp.autocast(scaler is not None):
@@ -495,7 +501,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                         wandb.log(vis_dict,step=model.module.global_steps)
 
         model.train()
-        # st()
+
         if args.fine_tune:
             model.module.encoder_q.eval()
             model.module.encoder_k.eval()
@@ -511,6 +517,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                 loss, vis_dict = model((crops, coords, flags, masks, class_labels,class_str))
             
             optimizer.zero_grad()
+
             if args.fp16:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -519,8 +526,10 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             else:
                 loss.backward()
                 optimizer.step()
+            
             if not args.do_tta and scheduler is not None:
                 scheduler.step()
+        
         except RecursionError:
             print('RecursionError')
             loss = 0.0
@@ -531,10 +540,9 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
 
         if not args.d and dist.get_rank() == 0:
             wandb.log(vis_dict,step=model.module.global_steps)
-        # avg loss from batch size
-        # print(loss.item())
+
+
         loss_meter.update(loss.item(), crops[0].size(0))
-        # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
@@ -542,7 +550,6 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
         if not args.do_tta :
             if (i+1)%(args.log_freq) == 0 or args.overfit:
                 test(test_loader, model, args, scaler)
-        #     st()
        
 
         if args.do_tta:
@@ -575,7 +582,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                             wandb.log(vis_dict,step=model.module.global_steps)
 
                         load_checkpoint(args, model, optimizer, scheduler, scaler)
-
+                        optimizer = load_optimizer(model,args)
                         # st()                        
                         print("end")
 

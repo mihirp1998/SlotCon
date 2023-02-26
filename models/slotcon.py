@@ -362,8 +362,8 @@ class SlotCon(nn.Module):
             vis_dict = {}
             image,masks_1,class_labels,class_str = input
             image_vis = self.unnormalize(image)
-            
-            vis_dict['test_class_name'] = wandb.Html(class_str[0])
+            # st()            
+            vis_dict['test_class_name'] = wandb.Html(str(class_str[0]))
             # print(self.predictor_slot.mlp[1].running_mean.sum())
             # print(list(self.encoder_k.model2.layer1.modules())[1].bn3.running_mean.sum())
             # print(self.encoder_k.model2.bn1.running_mean.sum())
@@ -654,8 +654,10 @@ class SlotCon(nn.Module):
                     masks_1_u = torch.stack(masks_1_u_)
                     score_q1_u = torch.stack(score_q1_u_)
 
-                    class_1_u = torch.stack(class_1_u_)
-                    pred_class_1_u = torch.stack(pred_class_1_u_)
+                    # st()
+
+                    
+                    
 
                     ce_loss_1 = self.cross_entropy(score_q1_u, masks_1_u)
                     # st()
@@ -697,6 +699,8 @@ class SlotCon(nn.Module):
                 ari_score = 0.0
 
             if self.args.do_seg_class:
+                pred_class_1_u = torch.stack(pred_class_1_u_)
+                class_1_u = torch.stack(class_1_u_)
                 pred_classes = torch.cat([pred_class_1_u,pred_class_2_u],0)
                 pred_classes = pred_classes.reshape(-1,pred_classes.shape[-1])
 

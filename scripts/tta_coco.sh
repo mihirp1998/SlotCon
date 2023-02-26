@@ -28,9 +28,9 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12339 --nproc_per_node=1 \
     --teacher-temp 0.07 \
     --group-loss-weight 0.5 \
     \
-    --batch-size 128 \
+    --batch-size 64 \
     --optimizer sgd \
-    --base-lr 0.01 \
+    --base-lr 1.0 \
     --weight-decay 0.0 \
     --warmup-epoch 0 \
     --epochs 800 \
@@ -40,10 +40,10 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12339 --nproc_per_node=1 \
     --save-freq 2 \
     --num-workers 0 \
     --seg-weight 0.0 \
-    --cont-weight 1.0 \
+    --cont-weight 0.0 \
     --annot-dir /projects/katefgroup/datasets/coco/annotations/semantic_val2017/ \
-    --tta-steps 5 \
-    --do-tta --resume output/coco_joint_73_new/current.pth --no-load-optim
+    --tta-steps 100 \
+    --do-tta --resume output/coco_joint_73_new/current.pth --no-load-optim --d
     # --overfit
     # --d
     #  --overfit 

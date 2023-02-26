@@ -304,13 +304,16 @@ class CustomDataAugmentation(object):
         image_norm = self.test_global_transfo(image_norm[0])
         mask_norm = mask_norm[0]
 
+        # mask_crops = [mask_norm, mask_norm]
+        # crops_transformed = [image_norm, image_norm]
+        # st()
+
 
         # st()
         # image_norm = self.normalize_image(image)
         # mask_norm = self.normalize_mask(mask)
         # print(image_norm[0].shape)
         # print((np.array(image_norm[0]) == np.array(image_norm[1])).all())
-
         # st()
         return image_norm, mask_norm, crops_transformed, coords, flags, mask_crops
 
