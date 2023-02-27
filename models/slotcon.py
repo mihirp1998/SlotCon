@@ -197,35 +197,21 @@ class SlotCon(nn.Module):
 
         self.evaluator = COCOPanopticEvaluatorExampleBased( dataset_name, './output/inference')
 
-        # if args.sl_layer:
-        #     self.encoder_q = encoder(head_type='second_last')
-        #     self.encoder_k = encoder(head_type='second_last')
-        # else:
-        # st()
-
         cfg = args.cfg
-        model = build_model(cfg)
-        # st()
-        checkpointer = DetectionCheckpointer(model)
-        # checkpointer.load(cfg.MODEL.WEIGHTS) 
-        # st()
+        model_q = build_model(cfg)
+        checkpointer = DetectionCheckpointer(model_q)
+        self.encoder_q = model_q
 
-        self.encoder_q = model
-        self.encoder_k = model
+        model_k = build_model(cfg)
+        self.encoder_k = model_k
+
+
         self.mean_pq_score = []
         
-        # self.encoder_q = encoder(head_type='early_return')
-        # self.encoder_k = encoder(head_type='early_return')
 
-        # st()
-
-
-        # st()
-
-
-        if args.do_seg_class:
-            self.class_predict_q = nn.Sequential(nn.Linear(self.dim_out, 1024), nn.ReLU(), nn.Linear(1024, 134))
-            self.class_loss = nn.CrossEntropyLoss(ignore_index=-1)            
+        # if args.do_seg_class:
+        #     self.class_predict_q = nn.Sequential(nn.Linear(self.dim_out, 1024), nn.ReLU(), nn.Linear(1024, 134))
+        #     self.class_loss = nn.CrossEntropyLoss(ignore_index=-1)            
 
 
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
@@ -239,28 +225,28 @@ class SlotCon(nn.Module):
         self.student_temp = args.student_temp
         self.teacher_temp = args.teacher_temp
             
-        self.projector_q = DINOHead2d(self.num_channels, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
-        self.projector_k = DINOHead2d(self.num_channels, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
+        # self.projector_q = DINOHead2d(self.num_channels, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
+        # self.projector_k = DINOHead2d(self.num_channels, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
 
-        for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
-            param_k.data.copy_(param_q.data)  # initialize
-            param_k.requires_grad = False  # not update by gradient
+        # for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
+        #     param_k.data.copy_(param_q.data)  # initialize
+        #     param_k.requires_grad = False  # not update by gradient
             
-        nn.SyncBatchNorm.convert_sync_batchnorm(self.projector_q)
-        nn.SyncBatchNorm.convert_sync_batchnorm(self.projector_k)
+        # nn.SyncBatchNorm.convert_sync_batchnorm(self.projector_q)
+        # nn.SyncBatchNorm.convert_sync_batchnorm(self.projector_k)
 
         self.num_prototypes = args.num_prototypes
         self.center_momentum = args.center_momentum
         self.register_buffer("center", torch.zeros(1, self.num_prototypes))
-        self.grouping_q = SemanticGrouping(self.num_prototypes, self.dim_out, self.teacher_temp)
-        self.grouping_k = SemanticGrouping(self.num_prototypes, self.dim_out, self.teacher_temp)
-        self.predictor_slot = DINOHead(self.dim_out, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
+        # self.grouping_q = SemanticGrouping(self.num_prototypes, self.dim_out, self.teacher_temp)
+        # self.grouping_k = SemanticGrouping(self.num_prototypes, self.dim_out, self.teacher_temp)
+        # self.predictor_slot = DINOHead(self.dim_out, hidden_dim=self.dim_hidden, bottleneck_dim=self.dim_out)
 
-        nn.SyncBatchNorm.convert_sync_batchnorm(self.predictor_slot)
+        # nn.SyncBatchNorm.convert_sync_batchnorm(self.predictor_slot)
             
-        for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
-            param_k.data.copy_(param_q.data)  # initialize
-            param_k.requires_grad = False  # not update by gradient
+        # for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
+        #     param_k.data.copy_(param_q.data)  # initialize
+        #     param_k.requires_grad = False  # not update by gradient
 
         self.K = int(args.num_instances * 1. / args.world_size / args.batch_size * args.epochs)
         self.k = int(args.num_instances * 1. / args.world_size / args.batch_size * (args.start_epoch - 1))
@@ -273,18 +259,18 @@ class SlotCon(nn.Module):
         """
         Momentum update of the key encoder
         """
-        momentum = 1. - (1. - self.teacher_momentum) * (math.cos(math.pi * self.k / self.K) + 1.) * 0.5
+        # momentum = 1. - (1. - self.teacher_momentum) * (math.cos(math.pi * self.k / self.K) + 1.) * 0.5
+        momentum = self.teacher_momentum
         self.k += 1
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
-        for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
-            param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
-        for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
-            param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)  
-
-        if self.args.max_pool_classifier:
-            for param_q, param_k in zip(self.class_predict_q.parameters(), self.class_predict_k.parameters()):
-                param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
+        # for param_q, param_k in zip(self.projector_q.parameters(), self.projector_k.parameters()):
+        #     param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
+        # for param_q, param_k in zip(self.grouping_q.parameters(), self.grouping_k.parameters()):
+        #     param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)  
+        # if self.args.max_pool_classifier:
+        #     for param_q, param_k in zip(self.class_predict_q.parameters(), self.class_predict_k.parameters()):
+        #         param_k.data = param_k.data * momentum + param_q.data * (1. - momentum)
 
 
 
@@ -335,8 +321,8 @@ class SlotCon(nn.Module):
         return F.cross_entropy(logits, labels) * (2 * tau)
 
 
-    def semantic_inference(self, mask_cls, mask_pred):
-        st()
+    # def semantic_inference(self, mask_cls, mask_pred):
+    #     st()
      
 
 
@@ -374,7 +360,7 @@ class SlotCon(nn.Module):
             results = self.evaluator.evaluate()
             self.mean_pq_score.append(results['panoptic_seg']['PQ'])
             print('PQ mean',torch.tensor(self.mean_pq_score).mean())
-            st()
+            # st()
 
             # for index in range(len(input)):
             #     self.evaluator.process(input[index], prediction_enc_q[index])
@@ -423,90 +409,88 @@ class SlotCon(nn.Module):
         else:
             input_0 = copy.deepcopy(input)
             input_1 = copy.deepcopy(input)
-            input_keys = ['instances', 'image', 'flags', 'coords']
+            # st()
+            coords_0, flags_0 = [], []
+            coords_1, flags_1 = [], []
 
+            total_loss = torch.tensor(0.0).cuda()
+
+            input_keys = ['instances', 'image', 'flags', 'coords']
+            # st()
             for input_idx in range(len(input_0)):
                 for key_val  in input_keys:
                     assert len(input_0[input_idx][key_val]) == 2
-                    input_0[input_idx][key_val] = input_0[input_idx][key_val][0]
+                    if key_val == 'coords':
+                        coords_0.append(input_0[input_idx][key_val][0])
+                    elif key_val == 'flags':
+                        flags_0.append(input_0[input_idx][key_val][0])
+                    else:
+                        input_0[input_idx][key_val] = input_0[input_idx][key_val][0]
+
 
 
             for input_idx in range(len(input_1)):
                 for key_val  in input_keys:
                     assert len(input_1[input_idx][key_val]) == 2
-                    input_1[input_idx][key_val] = input_1[input_idx][key_val][1]
+                    if key_val == 'coords':
+                        coords_1.append(input_1[input_idx][key_val][1])
+                    elif key_val == 'flags':
+                        flags_1.append(input_1[input_idx][key_val][1])
+                    else:
+                        input_1[input_idx][key_val] = input_1[input_idx][key_val][1]
+            # st()
+            coords_0, flags_0 = torch.stack(coords_0), torch.tensor(flags_0)
+            coords_1, flags_1 = torch.stack(coords_1), torch.tensor(flags_1)
 
             # inputs_1 = inputs['image']
             # crops, coords, flags, masks = input
-
+            # st()
             vis_dict = {}
-
             # if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
             #     crops_vis_0 = self.unnormalize(crops[0])
             #     crops_vis_img_1 = wandb.Image(crops_vis_0[:1], caption="input_image")
             #     vis_dict['input_image_1'] = crops_vis_img_1
-
             #     crops_vis_1 = self.unnormalize(crops[1])
             #     crops_vis_img_2 = wandb.Image(crops_vis_1[:1], caption="input_image")
             #     vis_dict['input_image_2'] = crops_vis_img_2
-
             #     vis_dict['class_name'] = wandb.Html(class_str[0])
-            loss_enc_q_0, loss_enc_q_1 = (self.encoder_q(input_0, get_ssl_features = True),self.encoder_q(input_1, get_ssl_features = True))
 
-            st()
-            if self.args.do_ssl:
-                x1, x2 = self.projector_q(enc_q_0), self.projector_q(enc_q_1)            
-                with torch.no_grad():  # no gradient to keys
-                    if not (self.args.do_tta or self.args.fine_tune):
-                        self._momentum_update_key_encoder()  # update the key encoder
-                    
-                    enc_k_0,enc_k_1 = (self.encoder_k(input_0),self.encoder_k(input_1))
+            q_pred_feats_loss_0, q_pred_feats_loss_1 = (self.encoder_q(input_0, get_ssl_features = True),self.encoder_q(input_1, get_ssl_features = True))
+            q_pred_masks_0, q_pred_logits_0, q_losses_0 = q_pred_feats_loss_0
+            q_pred_masks_1, q_pred_logits_1, q_losses_1 = q_pred_feats_loss_1
+            q0_aligned, q1_aligned = self.invaug(q_pred_masks_0, coords_0, flags_0), self.invaug(q_pred_masks_1, coords_1, flags_1)
+            # SSL loss
 
-                    y1, y2 = self.projector_k(enc_k_0), self.projector_k(enc_k_1)
-
-                (q1, score_q1), (q2, score_q2) = self.grouping_q(x1), self.grouping_q(x2)
-
-                score_q1_ = score_q1.flatten(2,3)
-                score_q2_ = score_q2.flatten(2,3)
-
-                # SSL loss
-                q1_aligned, q2_aligned = self.invaug(score_q1, coords[0], flags[0]), self.invaug(score_q2, coords[1], flags[1])
-
-                with torch.no_grad():
-                    (k1, score_k1), (k2, score_k2) = self.grouping_k(y1), self.grouping_k(y2)
-                    k1_aligned, k2_aligned = self.invaug(score_k1, coords[0], flags[0]), self.invaug(score_k2, coords[1], flags[1])
+            with torch.no_grad():
+                if not self.args.do_tta:
+                    self._momentum_update_key_encoder()  # update the key encoder
                 
-                cont_loss = self.group_loss_weight * self.self_distill(q1_aligned.permute(0, 2, 3, 1).flatten(0, 2), k2_aligned.permute(0, 2, 3, 1).flatten(0, 2)) \
-                    + self.group_loss_weight * self.self_distill(q2_aligned.permute(0, 2, 3, 1).flatten(0, 2), k1_aligned.permute(0, 2, 3, 1).flatten(0, 2))
-                
-                if not (self.args.do_tta or self.args.fine_tune):
-                    self.update_center(torch.cat([score_k1, score_k2]).permute(0, 2, 3, 1).flatten(0, 2))
+                k_pred_feats_loss_0, k_pred_feats_loss_1 = (self.encoder_q(input_0, get_ssl_features = True),self.encoder_q(input_1, get_ssl_features = True))
+                k_pred_masks_0, k_pred_logits_0, k_losses_0 = k_pred_feats_loss_0
+                k_pred_masks_1, k_pred_logits_1, k_losses_1 = k_pred_feats_loss_1
+                k0_aligned, k1_aligned = self.invaug(k_pred_masks_0, coords_0, flags_0), self.invaug(k_pred_masks_1, coords_1, flags_1)
 
+            # q0_aligned_slot_probs = q0_aligned.permute(0, 2, 3, 1).flatten(0, 2).softmax(1)
+            # q_pred_logits_0_ = q_pred_logits_0.flatten(0,2)
+            q0_aligned_cats = torch.einsum('bnhw,bnc->bchw', q0_aligned.softmax(1), q_pred_logits_0)
+            q1_aligned_cats = torch.einsum('bnhw,bnc->bchw', q1_aligned.softmax(1), q_pred_logits_1)
+            k0_aligned_cats = torch.einsum('bnhw,bnc->bchw', k0_aligned.softmax(1), k_pred_logits_0)
+            k1_aligned_cats = torch.einsum('bnhw,bnc->bchw', k1_aligned.softmax(1), k_pred_logits_1)
 
-                cont_loss += (1. - self.group_loss_weight) * self.ctr_loss_filtered(q1, k2, score_q1, score_k2) \
-                    + (1. - self.group_loss_weight) * self.ctr_loss_filtered(q2, k1, score_q2, score_k1)
+            # st()
+            if self.args.cont_weight > 0:
+                loss_cont = self.self_distill(q0_aligned_cats.permute(0, 2, 3, 1).flatten(0, 2), k1_aligned_cats.permute(0, 2, 3, 1).flatten(0, 2)) +  self.self_distill(q1_aligned_cats.permute(0, 2, 3, 1).flatten(0, 2), k0_aligned_cats.permute(0, 2, 3, 1).flatten(0, 2))
+                # st()
+                total_loss += self.args.cont_weight * loss_cont
+                vis_dict['cont_loss'] = loss_cont
 
+            if not self.args.do_tta:
+                self.update_center(torch.cat([k0_aligned_cats, k1_aligned_cats]).permute(0, 2, 3, 1).flatten(0, 2))
 
-
-                if (self.global_steps % self.args.log_freq) ==0 and (not self.args.d):
-                    mask_vis_1 = summ_instance_masks(score_q1[0],crops_vis_0[0],pred=True)
-                    mask_vis_2 = summ_instance_masks(score_q2[0],crops_vis_1[0],pred=True)
-                    mask_vis_1_img = wandb.Image(mask_vis_1, caption="pred_mask_new")
-                    vis_dict['pred_mask_new_1'] = mask_vis_1_img
-                    mask_vis_2_img = wandb.Image(mask_vis_2, caption="pred_mask_new")
-                    vis_dict['pred_mask_new_2'] = mask_vis_2_img
-
-
-          
-                vis_dict['total_loss'] = loss
-
-            
-
-            vis_dict['cont_loss'] = self.args.cont_weight * cont_loss
 
             self.global_steps += 1
-
-        return loss, vis_dict
+        # st()
+        return total_loss, vis_dict
     
     @torch.no_grad()
     def update_center(self, teacher_output):
@@ -516,7 +500,7 @@ class SlotCon(nn.Module):
         batch_center = torch.sum(teacher_output, dim=0, keepdim=True)
         dist.all_reduce(batch_center)
         batch_center = batch_center / (len(teacher_output) * dist.get_world_size())
-
+        # st()
         # ema update
         self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
 

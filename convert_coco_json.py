@@ -2,6 +2,7 @@ import json
 import ipdb
 st = ipdb.set_trace
 gt_json = '/projects/katefgroup/datasets/coco/annotations/panoptic_train2017.json'
+gt_json = '/home/mihir/phd_projects/slot_localloss/SlotCon/datasets/coco/annotations/panoptic_val2017.json'
 with open(gt_json, "r") as f:
     json_data = json.load(f)
 annotations_dict = {}

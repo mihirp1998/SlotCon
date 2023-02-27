@@ -20,7 +20,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --teacher-temp 0.07 \
     --group-loss-weight 0.5 \
     \
-    --batch-size 2 \
+    --batch-size 1 \
     --optimizer lars \
     --base-lr 1.0 \
     --weight-decay 1e-5 \

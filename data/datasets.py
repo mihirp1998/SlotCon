@@ -108,6 +108,9 @@ class COCOPanopticNewBaselineDatasetMapper:
                 min_keypoints=0,
                 proposal_files=None,
             )
+        print(self.dataset_dicts[0]['file_name'])
+        # st()
+        # print('tmp')
 
     def __len__(self):
         return len(self.dataset_dicts)
@@ -121,6 +124,9 @@ class COCOPanopticNewBaselineDatasetMapper:
             dict: a format that builtin models in detectron2 accept
         """
         do_og_aug = False
+        if self.args.overfit:
+            idx = 0
+            # st()
         dataset_dict = self.dataset_dicts[idx]
         dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
         # st()

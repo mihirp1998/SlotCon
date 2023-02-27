@@ -313,7 +313,7 @@ def main(args):
     if 'imagenet' in args.dataset.lower():
         if 'grogu' in hostname:
             args.data_dir = '/grogu/datasets/imagenet'
-
+    # st()
     transform = CustomDataAugmentation(args.image_size, args.min_scale, mask_size, args.no_aug)
     if "coco_det" in args.dataset.lower():
         train_dataset = COCOPanopticNewBaselineDatasetMapper(transform, args = args)
@@ -402,8 +402,8 @@ def test(test_loader, model, args,scaler):
                 # q1_acc.append(vis_dict['q1_classification_acc'])
 
                 
-                # if i ==num_val:
-                #     break
+                if i ==num_val:
+                    break
                 # if i ==num_val:
                 #     vis_dict['k1_acc_avg'] = torch.mean(torch.tensor(k1_acc))
                 #     vis_dict['q1_acc_avg'] = torch.mean(torch.tensor(q1_acc))
@@ -411,7 +411,7 @@ def test(test_loader, model, args,scaler):
                 
                 if not args.d and dist.get_rank() == 0:
                     wandb.log(vis_dict,step=model.module.global_steps)
-    st()
+    # st()
     print('done')
 
 
@@ -488,7 +488,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
         else:
             loss.backward()
             optimizer.step()
-
+        # st()
         if not args.do_tta and scheduler is not None:
             scheduler.step()
 
@@ -498,7 +498,8 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             wandb.log(vis_dict,step=model.module.global_steps)
         # avg loss from batch size
         # print(loss.item())
-        loss_meter.update(loss.item(), crops[0].size(0))
+        # st()
+        loss_meter.update(loss.item(), len(batch))
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
@@ -506,6 +507,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
         # # general testing
         if not args.do_tta:
             if (i+1)%(args.log_freq) == 0 or args.overfit:
+                # if False:
                 test(test_loader, model, args, scaler)
         #     st()
        

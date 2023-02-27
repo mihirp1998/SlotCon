@@ -17,7 +17,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --arch resnet50_pretrained \
     --dim-hidden 4096 \
     --dim-out 256 \
-    --num-prototypes 256 \
+    --num-prototypes 134 \
     --teacher-momentum 0.99 \
     --teacher-temp 0.07 \
     --group-loss-weight 0.5 \
@@ -30,13 +30,15 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --epochs 100 \
     --fp16 \
     \
-    --print-freq 10 \
+    --print-freq 1 \
     --save-freq 2 \
     --auto-resume \
     --num-workers 0 \
     --seg-weight 1.0 \
-    --cont-weight 0.0 \
-    --min-scale 1.0 --no-aug --d --log-freq 1
+    --cont-weight 1.0 \
+    --min-scale 1.0 --no-aug --d --log-freq 1 --overfit --d
+    #  --test-only
+    # --test-only
     # --d
     # --overfit 
     # --resume output/slotcon_coco_r50_pretrained_s05c05_2/current.pth
