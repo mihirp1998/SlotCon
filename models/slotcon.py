@@ -568,7 +568,7 @@ class SlotCon(nn.Module):
 
             score_q1_ = score_q1.flatten(2,3)
             score_q2_ = score_q2.flatten(2,3)
-            # st()
+            st()
 
             # self.mha(self.)
 

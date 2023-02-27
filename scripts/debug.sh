@@ -8,7 +8,7 @@ data_dir="/projects/katefgroup/datasets/coco"
 output_dir="./output/coco_debug_quick"
 
 
-CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
+CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12343 --nproc_per_node=1 \
     main_pretrain.py \
     --dataset COCO \
     --data-dir ${data_dir} \
@@ -22,7 +22,7 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --teacher-temp 0.07 \
     --group-loss-weight 0.5 \
     \
-    --batch-size 2 \
+    --batch-size 1 \
     --optimizer lars \
     --base-lr 1.0 \
     --weight-decay 1e-5 \
@@ -36,7 +36,9 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     --num-workers 0 \
     --seg-weight 1.0 \
     --cont-weight 0.0 \
-    --min-scale 1.0 --no-aug --d --do-seg-class --log-freq 1
+    --annot-dir datasets/coco/panoptic_val2017 \
+    --d --log-freq 1 --overfit
+    # --do-seg-class
     # --d
     # --overfit 
     # --resume output/slotcon_coco_r50_pretrained_s05c05_2/current.pth

@@ -33,6 +33,7 @@ class ImageFolder(Dataset):
         num_protos=256,
         overfit=False,
         do_tta=False,
+        args=None,
 
     ):
         super(ImageFolder, self).__init__()
@@ -53,18 +54,22 @@ class ImageFolder(Dataset):
             # st()
             self.fnames = list(glob.glob(data_dir + '/100_val2017/*.jpg'))            
         elif dataset == 'COCOval_corrupt':
-            self.fnames = list(glob.glob(data_dir + '/*.jpg'))            
+            self.fnames = list(glob.glob(data_dir + '/*.jpg'))
         else:
             raise NotImplementedError
+        # raise NotImplementedError
+        # st()
+        if len(self.fnames) ==0:
+            specific_filename = 'datasets/coco/val2017/000000000139.jpg'
+            self.fnames = [specific_filename]
         # st()
         self.dataset = dataset
         self.num_protos = num_protos
-        # st()
         self.coco_cat_dict = {}
         for idx_val,cat in enumerate(COCO_CATEGORIES):
             self.coco_cat_dict[cat['id']] = cat
             self.coco_cat_dict[cat['id']]['main_index'] = idx_val
-
+        self.args = args
         self.batch_size = batch_size
         self.tta_steps = tta_steps
         self.annot_dir = annot_dir
@@ -82,13 +87,16 @@ class ImageFolder(Dataset):
 
     def __getitem__(self, idx):
         # print(idx,self.total_idx)
+        # st()
         if self.do_tta:
             num_iter = self.total_idx//self.batch_size 
             idx = num_iter//self.tta_steps
         # print(idx,self.total_idx)
+        # st()
         if  self.overfit:
             idx = 12
             idx = 4
+            idx = 0
               
         fpath = self.fnames[idx]
         # st()
@@ -129,13 +137,16 @@ class ImageFolder(Dataset):
         self.total_idx += 1
         return_val = self.transform(image, mask_val) 
         return_val = list(return_val)
-        sup_labels = []
         # st()
+        sup_labels = []
         for class_label in class_labels:
             if class_label ==-1:
                 sup_label = -1
             else:
-                sup_label = self.coco_cat_dict[int(class_label)]['main_index']
+                if self.args.do_seg_class:
+                    sup_label = self.coco_cat_dict[int(class_label)]['main_index']
+                else:
+                    sup_label = -1
             sup_labels.append(sup_label)
                 
         # class_names = []

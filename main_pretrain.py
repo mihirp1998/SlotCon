@@ -315,8 +315,8 @@ def main(args):
         train_dataset = ImageNet(args.dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)        
         test_dataset = ImageNet(args.test_dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)
     else:
-        train_dataset = ImageFolder(args.dataset, args.data_dir, transform,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes)
-        test_dataset = ImageFolder(args.test_dataset, args.data_dir, transform,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes)
+        train_dataset = ImageFolder(args.dataset, args.data_dir, transform,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes,args=args)
+        test_dataset = ImageFolder(args.test_dataset, args.data_dir, transform,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes,args=args)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(
