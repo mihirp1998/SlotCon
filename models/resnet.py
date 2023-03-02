@@ -11,6 +11,8 @@ from torchvision.models.feature_extraction import create_feature_extractor
 import numpy as np
 # from mask2former.modeling.pixel_decoder.fpn import build_pixel_decoder
 from detectron2.modeling import build_backbone
+
+
 import pickle
 import logging
 # module_keys = logging.Logger.manager.loggerDict.keys()
@@ -122,9 +124,15 @@ class Bottleneck(nn.Module):
 
 class ResNetPretrainedClass(nn.Module):
 
-    def __init__(self):
+    def __init__(self,args):
         super(ResNetPretrainedClass, self).__init__()
-        resnet = models.resnet50(pretrained=True)
+        # st()
+        from torchvision.models import resnet
+        if args.heavy_aug:
+            resnet.model_urls["resnet50"] = "https://download.pytorch.org/models/resnet50-11ad3fa6.pth"
+        else:
+            pass
+        resnet = resnet.resnet50(pretrained=True)
         return_nodes = {"layer4.2.relu_2": "layer4",'fc': 'fc'}
         self.model2 = create_feature_extractor(resnet, return_nodes=return_nodes)
 
@@ -466,7 +474,7 @@ def resnet50_pretrained(**kwargs):
     return ResNetPretrained(Bottleneck, [3, 4, 6, 3], **kwargs, width=8)
 
 def resnet50_pretrained_classification(**kwargs):
-    return ResNetPretrainedClass()
+    return ResNetPretrainedClass(kwargs['args'])
 
 
 

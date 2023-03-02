@@ -19,9 +19,10 @@ torch.manual_seed(0)
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 
-from data.datasets import ImageFolder, ImageNet
+from data.datasets import ImageFolder, ImageNet, ImageNetNew
 from data.transforms import CustomDataAugmentation
 from data.transforms import TestTransform
+from data.transforms import ClassificationPresetTrain,ClassificationPresetEval
 
 from models import resnet
 from models.slotcon import SlotCon
@@ -60,6 +61,7 @@ def get_parser():
     
     parser.add_argument('--update-center-tta', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')
     parser.add_argument('--update-teacher-tta', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
+    parser.add_argument('--joint-train', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
 
     # optim.
     parser.add_argument('--batch-size', type=int, default=512, help='total batch size')
@@ -87,6 +89,8 @@ def get_parser():
     parser.add_argument('--only-test', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')    
     parser.add_argument('--do-5k', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')        
     parser.add_argument('--do-10', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')            
+    parser.add_argument('--out-head', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')                
+    parser.add_argument('--heavy-aug', action='store_true', default=False, help='whether or not to turn on automatic mixed precision')                    
     
     # misc
     parser.add_argument('--annot-dir', type=str, default='/projects/katefgroup/datasets/coco/annotations/mod_semantic_train2017/', help='output director')
@@ -95,6 +99,8 @@ def get_parser():
     parser.add_argument('--resume', default='', type=str, metavar='PATH', help='path to the latest checkpoint')
     parser.add_argument('--print-freq', type=int, default=10, help='print frequency')
     parser.add_argument('--save-freq', type=int, default=50, help='save frequency')
+    parser.add_argument('--save-freq-iter', type=int, default=2500, help='save frequency')
+
     parser.add_argument('--seed', type=int, help='Random seed.')
     parser.add_argument('--num-workers', type=int, default=8, help='num of workers per GPU to use')
     parser.add_argument('--log-freq', type=int, default=500, help='number of training epochs')    
@@ -282,7 +288,11 @@ def load_checkpoint(args, model, optimizer, scheduler, scaler=None):
             optimizer.param_groups[0]['lr'] = args.base_lr
 
     else:
-        logger.info("=> no checkpoint found at '{}'".format(args.resume)) 
+        if args.do_tta:
+            assert False
+        else:
+            logger.info("=> no checkpoint found at '{}'".format(args.resume)) 
+    return model
 
 def main(args):
 
@@ -310,13 +320,26 @@ def main(args):
         if 'grogu' in hostname:
             args.data_dir = '/grogu/datasets/imagenet'
     # st()
-    transform = CustomDataAugmentation(args.image_size, args.min_scale, mask_size, args.no_aug)
-    if "imagenet" in args.dataset.lower():
-        train_dataset = ImageNet(args.dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)        
-        test_dataset = ImageNet(args.test_dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)
+    if args.out_head:
+        if args.heavy_aug:
+            transform = ClassificationPresetTrain(crop_size=176,auto_augment_policy='ta_wide')
+        else:
+            transform = ClassificationPresetTrain(crop_size=224,auto_augment_policy=None,random_erase_prob=0.)
+        
+        eval_transform = ClassificationPresetEval(crop_size=224,resize_size=232)        
+
+        train_dataset = ImageNetNew(args.dataset, args.data_dir, transform, eval_transform, transform, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps, args=args)
+        test_dataset = ImageNetNew(args.test_dataset, args.data_dir, transform, eval_transform, transform, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps, args=args)
+
     else:
-        train_dataset = ImageFolder(args.dataset, args.data_dir, transform,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes,args=args)
-        test_dataset = ImageFolder(args.test_dataset, args.data_dir, transform,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes,args=args)
+        transform = CustomDataAugmentation(args.image_size, args.min_scale, mask_size, args.no_aug)
+    
+        if "imagenet" in args.dataset.lower():
+            train_dataset = ImageNet(args.dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)        
+            test_dataset = ImageNet(args.test_dataset, args.data_dir, transform,corrupt_name=args.corrupt_name,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes, args=args)
+        else:
+            train_dataset = ImageFolder(args.dataset, args.data_dir, transform,annot_dir=args.annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes,args=args)
+            test_dataset = ImageFolder(args.test_dataset, args.data_dir, transform,annot_dir=args.test_annot_dir, overfit=args.overfit,do_tta=args.do_tta, batch_size=args.batch_size,tta_steps=args.tta_steps,num_protos=args.num_prototypes,args=args)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     train_loader = torch.utils.data.DataLoader(
@@ -414,7 +437,7 @@ def test(test_loader, model, args,scaler):
     with torch.no_grad():
         with torch.cuda.amp.autocast(scaler is not None):
             for i, batch in enumerate(test_loader):
-                print(i,"example")
+                # print(i,"example")
                 image_norm, mask_norm,  crops, coords, flags, masks, class_labels, class_names, fpath = batch
                 image_norm = image_norm.cuda(non_blocking=True)
                 mask_norm = mask_norm.cuda(non_blocking=True)    
@@ -430,16 +453,22 @@ def test(test_loader, model, args,scaler):
                 q1_acc = q1_acc + list(vis_dict['q1_classification_acc_unnorm'].cpu().numpy())  
 
                 # st()
-                if not args.only_test:
-                    if i ==num_val:
-                        break
-                else:
+                # if not args.only_test:
+
+                # else:
+                if i ==num_val or args.only_test:
                     vis_dict['k1_acc_avg'] = sum(k1_acc)/len(k1_acc)
                     vis_dict['q1_acc_avg'] = sum(q1_acc)/len(q1_acc)
-
-                print("k1_acc_avg",vis_dict['k1_acc_avg'], "q1_acc_avg",vis_dict['q1_acc_avg'], list(vis_dict['k1_classification_acc_unnorm'].cpu().numpy()) )
+                    print("k1_acc_avg",vis_dict['k1_acc_avg'], "q1_acc_avg",vis_dict['q1_acc_avg'], list(vis_dict['k1_classification_acc_unnorm'].cpu().numpy()))
+                
                 if not args.d and dist.get_rank() == 0:
                     wandb.log(vis_dict,step=model.module.global_steps)
+
+                # print(vis_dict['k1_acc_avg'])
+                # st()
+                if i ==num_val:
+                    # st()
+                    break
 
 
 
@@ -460,6 +489,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
     start_acc_k = []
     end_acc_k = []    
     end = time.time()
+    do_first = True
 
     # model.global_step = (epoch-1) * len(train_loader)
 
@@ -486,6 +516,8 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             with torch.no_grad():
                 with torch.cuda.amp.autocast(scaler is not None):
                     print("start")
+                    # print(model.module.encoder_q.model2.conv1.weight.sum(), model.module.center.sum())
+                    # st()
                     vis_dict = model((image_norm, mask_norm, class_labels, class_str), is_test=True)
 
                     if not args.do_only_classification:
@@ -498,6 +530,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
                         start_acc_k.append(class_acc_k)
                     
                     if not args.d and dist.get_rank() == 0:
+                        print("logging")
                         wandb.log(vis_dict,step=model.module.global_steps)
 
         model.train()
@@ -526,7 +559,10 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             else:
                 loss.backward()
                 optimizer.step()
-            
+
+            # print("training")
+            # print(model.module.encoder_q.model2.conv1.weight.sum(),  model.module.center.sum())
+
             if not args.do_tta and scheduler is not None:
                 scheduler.step()
         
@@ -541,15 +577,23 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
         if not args.d and dist.get_rank() == 0:
             wandb.log(vis_dict,step=model.module.global_steps)
 
+        if model.module.global_steps % args.save_freq_iter == 0 and not args.overfit:
+            # st()
+            if not args.d and dist.get_rank() == 0:
+                save_checkpoint(args, epoch, model, optimizer, scheduler, scaler)
+            # st()
 
-        loss_meter.update(loss.item(), crops[0].size(0))
+
+        loss_meter.update(loss.item(), crops[
+            0].size(0))
         batch_time.update(time.time() - end)
         end = time.time()
 
         # # general testing
-        if not args.do_tta :
-            if (i+1)%(args.log_freq) == 0 or args.overfit:
+        if not args.do_tta:
+            if (i+1)%(args.log_freq) == 0 or args.overfit or do_first:
                 test(test_loader, model, args, scaler)
+                do_first = False
        
 
         if args.do_tta:
@@ -573,16 +617,25 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
 
                         end_mean_k = torch.mean(torch.tensor(end_acc_k))
                         start_mean_k = torch.mean(torch.tensor(start_acc_k))
+                        vis_dict['classification_loss'] = np.nan
 
                         model.module.set_means(start_mean_q, end_mean_q,start_mean_k, end_mean_k)
+
 
                         print(f"Mean Scores: Start- {start_mean_k},{start_mean_q}; End- {end_mean_k},{end_mean_q}")
 
                         if not args.d and dist.get_rank() == 0:
                             wandb.log(vis_dict,step=model.module.global_steps)
 
+                        # print("before end")
+                        # print(model.module.encoder_q.model2.conv1.weight.sum(), model.module.center.sum())
+
                         load_checkpoint(args, model, optimizer, scheduler, scaler)
                         optimizer = load_optimizer(model,args)
+
+                        # print("after end")
+                        # print(model.module.encoder_q.model2.conv1.weight.sum(), model.module.center.sum())
+
                         # st()                        
                         print("end")
 
@@ -591,7 +644,7 @@ def train(train_loader,test_loader, model, optimizer, scaler, scheduler, epoch, 
             etas = batch_time.avg * (train_len - i)
             logger.info(
                 f'Train: [{epoch}/{args.epochs}][{i}/{train_len}]  '
-                f'Exp name: {run_name}'
+                f'Exp name: {run_name}  '
                 f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.4f}  '
                 f'time {batch_time.val:.4f} ({batch_time.avg:.4f})  '
                 f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f}))  ')
@@ -620,9 +673,9 @@ if __name__ == '__main__':
         logger.info("Full config saved to {}".format(path))
         if not args.d:
             if run_name is not '':
-                wandb.init(project='slot_con_4', entity="mihirp",id= run_name)
+                wandb.init(project='slot_con_7', entity="mihirp",id= run_name)
             else:
-                wandb.init(project='slot_con_4', entity="mihirp")
+                wandb.init(project='slot_con_7', entity="mihirp")
             wandb.config.update(args)
     # print args
     logger.info(

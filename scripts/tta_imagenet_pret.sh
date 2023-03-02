@@ -11,9 +11,10 @@ output_dir="./output/tta_imagenet_val_10_1step_highler"
 output_dir="./output/tta_imagenet_corrupt_motion_blur_5_lowlr_5step_2"
 output_dir="./output/tta_imagenet_corrupt_snow_5_lowlr_5step_2"
 output_dir="./output/tta_imagenet_corrupt_gaussian_noise_5_moresteps"
+output_dir="./output/tta_imagenet_corrupt_gaussian_noise_5_step5_2"
 # imagenet_corrupt-snow-5
 # imagenetval
-CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12341 --nproc_per_node=1 \
+CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12342 --nproc_per_node=1 \
     main_pretrain.py \
     --dataset imagenet_corrupt_mod-gaussian_noise-5 \
     --data-dir ${data_dir} \
@@ -40,11 +41,12 @@ CUDA_VISIBLE_DEVICES=0 torchrun --master_port 12341 --nproc_per_node=1 \
     --auto-resume \
     --num-workers 0 \
     --seg-weight 0.0 \
-    --tta-steps 50 \
+    --tta-steps 5 \
     --do-tta \
     --no-load-optim \
     --class-weight 0.0 \
-    --cont-weight 1.0  --do-only-classification --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth
+    --cont-weight 1.0  --do-only-classification --resume output/imagenet_classify_73_pret_sup6_loaded/current.pth --d
+    # --d
 #  --do-10
 # change optimizer to sgd
 # change num_worker to 0
